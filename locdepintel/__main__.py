@@ -1,31 +1,10 @@
 import argparse
 import json
-import os
 import pathlib
-import subprocess
 import sys
 import webbrowser
 
-from . import core, parsers, server
-
-
-def notify_macos(message):
-    if sys.platform != "darwin":
-        return
-    # only internally generated fixed strings, not attacker-controlled advisory names
-    try:
-        subprocess.run(
-            [
-                "/usr/bin/osascript",
-                "-e",
-                f'display notification "{message}" with title "LocDepIntel"',
-            ],
-            timeout=5,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+from . import core, parsers, scheduler, server
 
 
 def run_scan(online=True, include_pulse=False):
@@ -38,48 +17,11 @@ def run_scan(online=True, include_pulse=False):
             "SELECT count(*) FROM events WHERE id>? AND kind=?", (before, "malware-alert")
         ).fetchone()[0]
     if assessed.get("state") == "ok" and new_malware:
-        notify_macos(
+        scheduler.notify(
             "A new malicious-package advisory affects an installed dependency. Open LocDepIntel."
         )
     pulse_result = core.sync_pulse() if online and include_pulse else {"state": "skipped"}
     return {"discovery": scanned, "security": assessed, "pulse": pulse_result}
-
-
-def install_launchd(interval=21600):
-    if sys.platform != "darwin":
-        raise RuntimeError("launchd setup is supported only on macOS")
-    if not 3600 <= interval <= 604800:
-        raise ValueError("Interval must be 1 hour to 7 days")
-    import plistlib
-
-    directory = pathlib.Path.home() / "Library" / "LaunchAgents"
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "io.github.gerard-majella.locdepintel.plist"
-    args = [str(pathlib.Path(sys.executable).resolve()), "-m", "locdepintel", "run-once"]
-    spec = {
-        "Label": "io.github.gerard-majella.locdepintel",
-        "ProgramArguments": args,
-        "StartInterval": interval,
-        "RunAtLoad": False,
-        "StandardOutPath": str(core.home_data() / "monitor.log"),
-        "StandardErrorPath": str(core.home_data() / "monitor-errors.log"),
-        "WorkingDirectory": str(pathlib.Path(__file__).resolve().parent.parent),
-    }
-    path.write_bytes(plistlib.dumps(spec))
-    os.chmod(path, 0o600)
-    # use current user launchd domain; if already registered, bootout then bootstrap
-    uid = os.getuid()
-    subprocess.run(
-        ["launchctl", "bootout", f"gui/{uid}", str(path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    p = subprocess.run(
-        ["launchctl", "bootstrap", f"gui/{uid}", str(path)], capture_output=True, text=True
-    )
-    if p.returncode:
-        raise RuntimeError(f"Could not register launchd job: {p.stderr.strip()}")
-    return str(path)
 
 
 def serve(port, open_browser=True):
@@ -126,9 +68,11 @@ def main():
     conf.add_argument("paths", nargs="*", help="Replace discovery paths (none means list)")
     glob_cmd = sp.add_parser("globals", help="Turn scanning of global installs on or off")
     glob_cmd.add_argument("state", nargs="?", choices=["on", "off"], help="Omit to show")
-    sched = sp.add_parser("schedule", help="Install user launchd job (macOS)")
-    sched.add_argument("--hours", type=int, default=6)
-    sp.add_parser("unschedule", help="Remove user launchd job")
+    sched = sp.add_parser(
+        "schedule", help="Run checks periodically (launchd, systemd timer or Task Scheduler)"
+    )
+    sched.add_argument("--hours", type=int, default=6, help="Interval, 1-168 (default 6)")
+    sp.add_parser("unschedule", help="Remove the periodic check")
     args = parser.parse_args()
     if args.command == "serve":
         return serve(args.port, open_browser=not args.no_browser)
@@ -170,22 +114,12 @@ def main():
             if pathlib.Path(path).is_dir():
                 print(f"  {kind:14} {path}")
     elif args.command == "schedule":
-        print("Scheduled with launchd:", install_launchd(args.hours * 3600))
+        try:
+            print("Scheduled:", scheduler.install(args.hours))
+        except scheduler.SchedulerError as ex:
+            sys.exit(f"locdepintel: {ex}")
     elif args.command == "unschedule":
-        if sys.platform != "darwin":
-            parser.error("macOS only")
-        path = (
-            pathlib.Path.home()
-            / "Library"
-            / "LaunchAgents"
-            / "io.github.gerard-majella.locdepintel.plist"
-        )
-        if path.exists():
-            subprocess.run(
-                ["launchctl", "bootout", f"gui/{os.getuid()}", str(path)], capture_output=True
-            )
-            path.unlink()
-        print("Schedule removed.")
+        print("Schedule removed." if scheduler.uninstall() else "No schedule was installed.")
     else:
         parser.print_help()
 
