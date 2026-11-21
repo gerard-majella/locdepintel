@@ -7,7 +7,11 @@ import pathlib
 import tempfile
 from unittest import mock
 
-from locdepintel import core
+from locdepintel import advisories, settings
+
+
+def _network_blocked(*args, **kwargs):
+    raise AssertionError(f"Test tried to use the real network: {args[:1]}")
 
 
 def isolate(testcase):
@@ -18,7 +22,10 @@ def isolate(testcase):
     data = base / "data"
     data.mkdir()
     patches = [
-        mock.patch.object(core, "home_data", lambda: data),
+        mock.patch.object(settings, "home_data", lambda: data),
+        # No test may reach the real internet; tests that need it use mock_network().
+        mock.patch.object(advisories, "request_json", side_effect=_network_blocked),
+        mock.patch("urllib.request.urlopen", side_effect=_network_blocked),
         mock.patch.dict(
             os.environ, {"XDG_DATA_HOME": str(base / "xdg"), "LOCALAPPDATA": str(base / "xdg")}
         ),
@@ -31,7 +38,7 @@ def isolate(testcase):
 
 def mock_network(testcase, side_effect):
     """Replace every OSV / deps.dev call made by LocDepIntel."""
-    patcher = mock.patch.object(core, "request_json", side_effect=side_effect)
+    patcher = mock.patch.object(advisories, "request_json", side_effect=side_effect)
     fake = patcher.start()
     testcase.addCleanup(patcher.stop)
     return fake

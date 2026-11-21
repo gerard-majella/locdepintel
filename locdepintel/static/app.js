@@ -5,6 +5,15 @@ const esc = (v) =>
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
   );
+// Tagged template for markup: lets long templates span several lines. Any whitespace that
+// contains a line break is removed, so the HTML produced is identical to a one-line template.
+// Values are inserted as given; callers escape untrusted text with esc().
+// (.prettierrc turns off embedded formatting so prettier never re-wraps text inside these.)
+const html = (strings, ...values) =>
+  strings.reduce(
+    (out, part, i) => out + part.replace(/\s*\n\s*/g, "") + (i < values.length ? values[i] : ""),
+    "",
+  );
 const fmt = (t) => (t ? new Date(t).toLocaleString() : "Not recorded");
 const short = (s, n = 58) =>
   String(s || "").length > n ? String(s).slice(0, n - 1) + "…" : String(s || "");
@@ -30,6 +39,50 @@ let overview = {},
   jobPolling = null,
   inventoryMode = "grouped",
   noticeTimer = null;
+// Fixed UI text inserted into markup. Must not contain HTML special characters.
+const TEXT = {
+  locationsHelp:
+    "Each location is independently actionable. Choose one to inspect its advisories, " +
+    "Finder and Terminal shortcuts, and review-only remediation steps.",
+  malwareNextStep:
+    "Stop using affected environments and review possible execution and credential " +
+    "exposure. Removal alone may not reverse earlier harm.",
+  vulnerabilityNextStep:
+    "Review the source advisory and identify a patched, compatible version. " +
+    "Resolve transitive dependencies through their parent package.",
+  firstObservedCaveat: "First observed is not proof of original installation date.",
+  noAdvisory:
+    "No matching advisory in stored results. This does not establish that the package is safe.",
+};
+const LOCAL_STATUS = {
+  affected: "Exact advisory match in inventory",
+  "package-present": "Package name present · verify versions",
+  "not-detected": "Not detected in covered inventory",
+};
+const advisoryLink = (a, label) =>
+  url(a.url)
+    ? `<a href="${esc(url(a.url))}" target="_blank" rel="noopener noreferrer">${label} ↗</a>`
+    : "";
+function locationCell(p) {
+  if (inventoryMode !== "grouped") return esc(short(p.env, 43));
+  const noun = p.installation_count === 1 ? "location" : "locations";
+  return `<strong>${p.installation_count}</strong> ${noun}`;
+}
+function securityEvidence(findings) {
+  if (!findings.length) return `<p>${TEXT.noAdvisory}</p>`;
+  return findings
+    .map(
+      (a) => html`<div class="advisory">${riskLabel(a.kind)} &nbsp; ${esc(a.advisory)}
+        <p>${esc(a.summary)}</p>
+        ${advisoryLink(a, "View original advisory")}</div>`,
+    )
+    .join("");
+}
+function checkSummary(check) {
+  if (!check) return "No advisory check recorded.";
+  const count = check.packages || 0;
+  return `${esc(check.state)} · ${esc(fmt(check.timestamp))} · ${count} package versions checked`;
+}
 const PER_PAGE = 35;
 async function api(endpoint, method = "GET", obj) {
   const r = await fetch("/api/" + endpoint, {
@@ -172,7 +225,17 @@ function renderOverview() {
     items
       .map(
         (g, i) =>
-          `<tr tabindex="0" data-queue="${i}"><td><div class="pkg-title">${esc(g.name)} <span class="muted">${esc(g.version)}</span></div><div class="pkg-sub">${esc(g.ecosystem)}</div></td><td>${riskLabel(g.kind)}</td><td>${g.advisory_count}</td><td>${g.installation_count}</td><td class="chev">›</td></tr>`,
+          html`<tr tabindex="0" data-queue="${i}">
+            <td>
+            <div class="pkg-title">${esc(g.name)} <span class="muted">${esc(g.version)}</span>
+            </div>
+            <div class="pkg-sub">${esc(g.ecosystem)}</div>
+            </td>
+            <td>${riskLabel(g.kind)}</td>
+            <td>${g.advisory_count}</td>
+            <td>${g.installation_count}</td>
+            <td class="chev">›</td>
+            </tr>`,
       )
       .join("") ||
     '<tr><td colspan="5" class="empty">No matching advisories in the current inventory. This is not a guarantee of safety.</td></tr>';
@@ -181,7 +244,15 @@ function renderOverview() {
     envs
       .map(
         (x, i) =>
-          `<button class="env-item" data-envi="${i}"><span><strong>${esc(x.path.split("/").filter(Boolean).slice(-2).join(" / ") || x.path)}</strong><small title="${esc(x.path)}">${esc(x.ecosystem || "")} · ${esc(x.path)}</small></span><span class="count">${x.package_count} packages</span><span class="count">${groups.filter((g) => g.locations.includes(x.path)).length} affected</span><span class="chev">›</span></button>`,
+          html`<button class="env-item" data-envi="${i}">
+            <span>
+            <strong>${esc(x.path.split("/").filter(Boolean).slice(-2).join(" / ") || x.path)}</strong>
+            <small title="${esc(x.path)}">${esc(x.ecosystem || "")} · ${esc(x.path)}</small>
+            </span>
+            <span class="count">${x.package_count} packages</span>
+            <span class="count">${groups.filter((g) => g.locations.includes(x.path)).length} affected</span>
+            <span class="chev">›</span>
+            </button>`,
       )
       .join("") ||
     '<p class="footnote">No environments discovered. Open Settings to choose folders and Scan to begin.</p>';
@@ -214,7 +285,17 @@ function renderAction() {
     visibleActions
       .map(
         (g, i) =>
-          `<tr tabindex="0" data-action="${i}"><td><div class="pkg-title">${esc(g.name)} <span class="muted">${esc(g.version)}</span></div><div class="pkg-sub">${esc(g.ecosystem)}</div></td><td>${riskLabel(g.kind)}</td><td>${g.advisory_count}</td><td>${g.installation_count}</td><td class="chev">›</td></tr>`,
+          html`<tr tabindex="0" data-action="${i}">
+            <td>
+            <div class="pkg-title">${esc(g.name)} <span class="muted">${esc(g.version)}</span>
+            </div>
+            <div class="pkg-sub">${esc(g.ecosystem)}</div>
+            </td>
+            <td>${riskLabel(g.kind)}</td>
+            <td>${g.advisory_count}</td>
+            <td>${g.installation_count}</td>
+            <td class="chev">›</td>
+            </tr>`,
       )
       .join("") || '<tr><td colspan="5" class="empty">No findings match these filters.</td></tr>';
 }
@@ -264,7 +345,17 @@ function renderInventory(reset = false) {
     rows
       .map(
         (p, i) =>
-          `<tr tabindex="0" data-row="${i}"><td><span class="pkg-title">${esc(p.name)}</span><div class="pkg-sub">${esc(p.ecosystem)}</div></td><td class="mono">${esc(p.version)}</td><td>${esc(p.direct || "unknown")}</td><td>${riskLabel(riskFor(p))}</td><td title="${esc(p.env)}">${inventoryMode === "grouped" ? `<strong>${p.installation_count}</strong> ${p.installation_count === 1 ? "location" : "locations"}` : esc(short(p.env, 43))}</td><td class="chev">›</td></tr>`,
+          html`<tr tabindex="0" data-row="${i}">
+            <td>
+            <span class="pkg-title">${esc(p.name)}</span>
+            <div class="pkg-sub">${esc(p.ecosystem)}</div>
+            </td>
+            <td class="mono">${esc(p.version)}</td>
+            <td>${esc(p.direct || "unknown")}</td>
+            <td>${riskLabel(riskFor(p))}</td>
+            <td title="${esc(p.env)}">${locationCell(p)}</td>
+            <td class="chev">›</td>
+            </tr>`,
       )
       .join("") ||
     '<tr><td colspan="6" class="empty">No packages match. Adjust filters or expand scan locations.</td></tr>';
@@ -275,7 +366,25 @@ function groupedPackageDetails(p) {
     return;
   }
   const g = relevantGroup(p);
-  const content = `<h2 id="drawer-heading">${esc(p.name)} <span class="muted">${esc(p.version)}</span></h2><p class="muted">${esc(p.ecosystem)} · ${p.installation_count} installations · ${g?.advisory_count || 0} published advisories</p><div class="drawer-section"><h3>Where it's installed</h3><p>Each location is independently actionable. Choose one to inspect its advisories, Finder and Terminal shortcuts, and review-only remediation steps.</p>${p.locations.map((x, i) => `<div class="detail-row"><div><strong>${esc(folderOf(x.env))}</strong><div class="detail-path">${esc(x.env)}</div></div><button class="secondary-button" data-install="${i}">Inspect →</button></div>`).join("")}</div><div class="drawer-section"><p>Grouping counts reflect the current search and folder filters. LocDepIntel does not uninstall anything automatically.</p></div>`;
+  const content = html`<h2 id="drawer-heading">${esc(p.name)} <span class="muted">${esc(p.version)}</span>
+    </h2>
+    <p class="muted">${esc(p.ecosystem)} · ${p.installation_count} installations · ${g?.advisory_count || 0} published advisories</p>
+    <div class="drawer-section">
+    <h3>Where it's installed</h3>
+    <p>${TEXT.locationsHelp}</p>${p.locations
+      .map(
+        (x, i) => html`<div class="detail-row">
+    <div>
+    <strong>${esc(folderOf(x.env))}</strong>
+    <div class="detail-path">${esc(x.env)}</div>
+    </div>
+    <button class="secondary-button" data-install="${i}">Inspect →</button>
+    </div>`,
+      )
+      .join("")}</div>
+    <div class="drawer-section">
+    <p>Grouping counts reflect the current search and folder filters. LocDepIntel does not uninstall anything automatically.</p>
+    </div>`;
   openDrawer("PACKAGE INSTALLATIONS", content);
   $("drawer-body")
     .querySelectorAll("[data-install]")
@@ -287,7 +396,13 @@ function renderHistory() {
     events
       .map(
         (e) =>
-          `<div class="history-item"><div class="history-time">${esc(fmt(e.occurred))}</div><div><strong>${esc(e.kind)}</strong> · ${esc(e.name || "Inventory event")} ${esc(e.version || "")}<p>${esc(short(e.env, 100))}</p><p>${esc(e.description || "")}</p></div></div>`,
+          html`<div class="history-item">
+            <div class="history-time">${esc(fmt(e.occurred))}</div>
+            <div>
+            <strong>${esc(e.kind)}</strong> · ${esc(e.name || "Inventory event")} ${esc(e.version || "")}<p>${esc(short(e.env, 100))}</p>
+            <p>${esc(e.description || "")}</p>
+            </div>
+            </div>`,
       )
       .join("") || '<div class="empty">No recorded changes.</div>';
 }
@@ -320,10 +435,39 @@ function closeDrawer() {
 }
 function controlsForEnv(env, compact = false) {
   const id = encodeURIComponent(env);
-  return `<div class="detail-actions"><button class="secondary-button" data-reveal="${esc(id)}">Reveal folder</button><button class="secondary-button" data-terminal="${esc(id)}">Open Terminal</button><button class="quiet-button" data-copy="${esc(id)}">Copy path</button></div>`;
+  return html`<div class="detail-actions">
+    <button class="secondary-button" data-reveal="${esc(id)}">Reveal folder</button>
+    <button class="secondary-button" data-terminal="${esc(id)}">Open Terminal</button>
+    <button class="quiet-button" data-copy="${esc(id)}">Copy path</button>
+    </div>`;
 }
 function groupDetails(g) {
-  const content = `<h2 id="drawer-heading">${esc(g.name)} <span class="muted">${esc(g.version)}</span></h2><p class="muted">${esc(g.ecosystem)} · ${g.advisory_count} unique advisories · ${g.installation_count} installations</p><div class="drawer-section"><h3>Source advisories</h3>${g.advisories.map((a) => `<div class="advisory">${riskLabel(a.kind)} &nbsp; <strong>${esc(a.id)}</strong><p>${esc(a.summary || "No advisory summary supplied.")}</p>${url(a.url) ? `<a href="${esc(url(a.url))}" target="_blank" rel="noopener noreferrer">Original advisory ↗</a>` : ""}</div>`).join("")}</div><div class="drawer-section"><h3>Where it's installed</h3><p>Select an environment to see review-only removal instructions and filesystem shortcuts.</p>${g.locations.map((env, i) => `<div class="detail-row"><div class="detail-path">${esc(env)}</div><button class="quiet-button" data-open-location="${i}">Review →</button></div>`).join("")}</div><div class="drawer-section"><h3>Recommended next step</h3><p>${g.kind === "malware" ? "Stop using affected environments and review possible execution and credential exposure. Removal alone may not reverse earlier harm." : "Review the source advisory and identify a patched, compatible version. Resolve transitive dependencies through their parent package."}</p><button class="secondary-button" data-open-location="0">Review first installation →</button></div>`;
+  const content = html`<h2 id="drawer-heading">${esc(g.name)} <span class="muted">${esc(g.version)}</span>
+    </h2>
+    <p class="muted">${esc(g.ecosystem)} · ${g.advisory_count} unique advisories · ${g.installation_count} installations</p>
+    <div class="drawer-section">
+    <h3>Source advisories</h3>${g.advisories
+      .map(
+        (a) => html`<div class="advisory">${riskLabel(a.kind)} &nbsp; <strong>${esc(a.id)}</strong>
+    <p>${esc(a.summary || "No advisory summary supplied.")}</p>
+    ${advisoryLink(a, "Original advisory")}</div>`,
+      )
+      .join("")}</div>
+    <div class="drawer-section">
+    <h3>Where it's installed</h3>
+    <p>Select an environment to see review-only removal instructions and filesystem shortcuts.</p>${g.locations
+      .map(
+        (env, i) => html`<div class="detail-row">
+    <div class="detail-path">${esc(env)}</div>
+    <button class="quiet-button" data-open-location="${i}">Review →</button>
+    </div>`,
+      )
+      .join("")}</div>
+    <div class="drawer-section">
+    <h3>Recommended next step</h3>
+    <p>${g.kind === "malware" ? TEXT.malwareNextStep : TEXT.vulnerabilityNextStep}</p>
+    <button class="secondary-button" data-open-location="0">Review first installation →</button>
+    </div>`;
   openDrawer("GROUPED FINDING", content);
   $("drawer-body")
     .querySelectorAll("[data-open-location]")
@@ -422,7 +566,47 @@ function packageDetails(p) {
     ),
     r = remedial(p),
     link = registry(p);
-  const content = `<h2 id="drawer-heading">${esc(p.name)}</h2><p class="muted">${esc(p.ecosystem)} · ${esc(p.version)} · ${esc(p.direct || "unknown")} dependency</p><p>${riskLabel(riskFor(p))}</p><div class="drawer-section"><h3>Installed environment</h3><div class="detail-path">${esc(p.env)}</div>${controlsForEnv(p.env)}<p>First observed: ${esc(fmt(p.discovered))}. Last seen: ${esc(fmt(p.seen))}. First observed is not proof of original installation date.</p></div><div class="drawer-section"><h3>Security evidence</h3>${findings.length ? findings.map((a) => `<div class="advisory">${riskLabel(a.kind)} &nbsp; ${esc(a.advisory)}<p>${esc(a.summary)}</p>${url(a.url) ? `<a href="${esc(url(a.url))}" target="_blank" rel="noopener noreferrer">View original advisory ↗</a>` : ""}</div>`).join("") : "<p>No matching advisory in stored results. This does not establish that the package is safe.</p>"}${g && g.installation_count > 1 ? `<p>Also found in ${g.installation_count - 1} other installation(s).</p><button class="quiet-button" id="all-locations">See all locations →</button>` : ""}</div><div class="drawer-section"><h3>Remediation guidance</h3><div class="warnbox"><p>${esc(r.msg)}</p></div><div class="command" id="remedy">${esc(r.command)}</div><div class="detail-actions"><button class="secondary-button" id="copy-command">Copy instructions</button><button class="quiet-button" id="recheck-advisories">Recheck advisories</button></div><p>No installation, removal or update commands are run automatically. For malware, consider credentials and a trusted rebuild.</p></div><div class="drawer-section"><h3>Versions and research</h3><p>Investigate current published versions; newer does not necessarily mean fixed or compatible.</p><button class="secondary-button" id="version-lookup">Look up published versions</button><div id="versions-result"></div>${link ? `<p><a href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open package registry ↗</a></p>` : ""}</div>`;
+  const content = html`<h2 id="drawer-heading">${esc(p.name)}</h2>
+    <p class="muted">${esc(p.ecosystem)} · ${esc(p.version)} · ${esc(p.direct || "unknown")} dependency</p>
+    <p>${riskLabel(riskFor(p))}</p>
+    <div class="drawer-section">
+    <h3>Installed environment</h3>
+    <div class="detail-path">${esc(p.env)}</div>${controlsForEnv(p.env)}
+    <p>First observed: ${esc(fmt(p.discovered))}. Last seen: ${esc(fmt(p.seen))}. ${
+      TEXT.firstObservedCaveat
+    }</p>
+    </div>
+    <div class="drawer-section">
+    <h3>Security evidence</h3>${securityEvidence(findings)}${
+      g && g.installation_count > 1
+        ? html`<p>Also found in ${g.installation_count - 1} other installation(s).</p>
+    <button class="quiet-button" id="all-locations">See all locations →</button>`
+        : ""
+    }</div>
+    <div class="drawer-section">
+    <h3>Remediation guidance</h3>
+    <div class="warnbox">
+    <p>${esc(r.msg)}</p>
+    </div>
+    <div class="command" id="remedy">${esc(r.command)}</div>
+    <div class="detail-actions">
+    <button class="secondary-button" id="copy-command">Copy instructions</button>
+    <button class="quiet-button" id="recheck-advisories">Recheck advisories</button>
+    </div>
+    <p>No installation, removal or update commands are run automatically. For malware, consider credentials and a trusted rebuild.</p>
+    </div>
+    <div class="drawer-section">
+    <h3>Versions and research</h3>
+    <p>Investigate current published versions; newer does not necessarily mean fixed or compatible.</p>
+    <button class="secondary-button" id="version-lookup">Look up published versions</button>
+    <div id="versions-result">
+    </div>${
+      link
+        ? html`<p>
+    <a href="${esc(link)}" target="_blank" rel="noopener noreferrer">Open package registry ↗</a>
+    </p>`
+        : ""
+    }</div>`;
   openDrawer("PACKAGE ACTION PLAN", content);
   if ($("all-locations")) $("all-locations").onclick = () => groupDetails(g);
   $("copy-command").onclick = () =>
@@ -461,7 +645,10 @@ function packageDetails(p) {
           .slice(0, 6)
           .map(
             (v) =>
-              `<div class="detail-row"><span class="mono">${esc(v.version)}</span><span class="muted mini">${esc((v.published || "").slice(0, 10))}</span></div>`,
+              html`<div class="detail-row">
+                <span class="mono">${esc(v.version)}</span>
+                <span class="muted mini">${esc((v.published || "").slice(0, 10))}</span>
+              </div>`,
           )
           .join("") +
         "<p>Check affected version ranges in the advisory before updating.</p>";
@@ -598,7 +785,17 @@ $("scan-details").onclick = () => {
     check = overview.checks?.[0];
   openDrawer(
     "SCAN DETAILS",
-    `<h2 id="drawer-heading">Last checks</h2><div class="drawer-section"><h3>Discovery</h3><p>${scan ? `${esc(scan.status)} · ${esc(fmt(scan.ended || scan.started))} · ${scan.packages} entries` : "No scan recorded."}</p><p>${esc(scan?.error || "No discovery errors recorded.")}</p></div><div class="drawer-section"><h3>Security advisories</h3><p>${check ? `${esc(check.state)} · ${esc(fmt(check.timestamp))} · ${check.packages || 0} package versions checked` : "No advisory check recorded."}</p><p>${esc(check?.note || "")}. No successful check means exposure status is unknown.</p></div>`,
+    html`<h2 id="drawer-heading">Last checks</h2>
+      <div class="drawer-section">
+      <h3>Discovery</h3>
+      <p>${scan ? `${esc(scan.status)} · ${esc(fmt(scan.ended || scan.started))} · ${scan.packages} entries` : "No scan recorded."}</p>
+      <p>${esc(scan?.error || "No discovery errors recorded.")}</p>
+      </div>
+      <div class="drawer-section">
+      <h3>Security advisories</h3>
+      <p>${checkSummary(check)}</p>
+      <p>${esc(check?.note || "")}. No successful check means exposure status is unknown.</p>
+      </div>`,
   );
 };
 for (const id of ["action-search", "action-kind", "action-new"])
@@ -723,12 +920,26 @@ function renderPulse() {
     visiblePulse
       .map(
         (a, i) =>
-          `<article class="pulseentry"><div class="pulsemeta"><span>${riskLabel(a.kind)}</span><span>${esc((a.published || "").slice(0, 10))}</span><span>${esc(a.severity)}</span><span>${a.local_status === "affected" ? "Exact advisory match in inventory" : a.local_status === "package-present" ? "Package name present · verify versions" : "Not detected in covered inventory"}</span></div><h3>${esc(a.summary)}</h3><p class="pkg-sub">${esc(
-            a.affected
-              .slice(0, 5)
-              .map((x) => x.ecosystem + " / " + x.name)
-              .join(" · "),
-          )}</p><div class="pulse-actions"><a href="${esc(url(a.url) || "#")}" target="_blank" rel="noopener noreferrer">Original source ↗</a><button data-pulse="${i}">Check inventory →</button><span class="muted mono">${esc(a.id)}</span></div></article>`,
+          html`<article class="pulseentry">
+            <div class="pulsemeta">
+            <span>${riskLabel(a.kind)}</span>
+            <span>${esc((a.published || "").slice(0, 10))}</span>
+            <span>${esc(a.severity)}</span>
+            <span>${LOCAL_STATUS[a.local_status] || LOCAL_STATUS["not-detected"]}</span>
+            </div>
+            <h3>${esc(a.summary)}</h3>
+            <p class="pkg-sub">${esc(
+              a.affected
+                .slice(0, 5)
+                .map((x) => x.ecosystem + " / " + x.name)
+                .join(" · "),
+            )}</p>
+            <div class="pulse-actions">
+            <a href="${esc(url(a.url) || "#")}" target="_blank" rel="noopener noreferrer">Original source ↗</a>
+            <button data-pulse="${i}">Check inventory →</button>
+            <span class="muted mono">${esc(a.id)}</span>
+            </div>
+            </article>`,
       )
       .join("") ||
     '<p class="empty">No matching disclosures. Refresh sources or change filters.</p>';
@@ -797,7 +1008,13 @@ async function firstLaunch() {
       roots
         .map(
           (x, i) =>
-            `<label class="welcome-root"><input type="checkbox" data-welcome-root="${i}" ${x.default ? "checked" : ""}><span><strong>${esc(x.name)}</strong><small>${esc(x.path)}</small></span></label>`,
+            html`<label class="welcome-root">
+              <input type="checkbox" data-welcome-root="${i}" ${x.default ? "checked" : ""}>
+              <span>
+              <strong>${esc(x.name)}</strong>
+              <small>${esc(x.path)}</small>
+              </span>
+              </label>`,
         )
         .join("") ||
       "<p>No common project folders found. Open Settings to enter custom locations.</p>";

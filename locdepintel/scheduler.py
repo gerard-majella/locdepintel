@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 
-from . import core
+from . import settings
 
 LABEL = "io.github.gerard-majella.locdepintel"
 UNIT = "locdepintel"
@@ -59,8 +59,8 @@ def launchd_spec(hours):
         "ProgramArguments": [_python(), "-m", "locdepintel", "run-once"],
         "StartInterval": hours * 3600,
         "RunAtLoad": False,
-        "StandardOutPath": str(core.home_data() / "monitor.log"),
-        "StandardErrorPath": str(core.home_data() / "monitor-errors.log"),
+        "StandardOutPath": str(settings.home_data() / "monitor.log"),
+        "StandardErrorPath": str(settings.home_data() / "monitor-errors.log"),
         "WorkingDirectory": _workdir(),
     }
 
@@ -130,7 +130,7 @@ def systemd_units(hours):
 
 
 def _cron_hint(hours):
-    log = shlex.quote(str(core.home_data() / "monitor.log"))
+    log = shlex.quote(str(settings.home_data() / "monitor.log"))
     command = f"cd {shlex.quote(_workdir())} && {shlex.quote(_python())} -m locdepintel run-once"
     every = f"0 */{hours} * * *" if hours < 24 else f"0 9 */{max(1, hours // 24)} * *"
     # cron treats an unescaped % as a newline
@@ -184,14 +184,14 @@ def _uninstall_systemd():
 
 
 def _windows_wrapper():
-    return core.home_data() / "run-once.cmd"
+    return settings.home_data() / "run-once.cmd"
 
 
 def windows_wrapper_text():
     python = pathlib.Path(_python())
     pythonw = python.with_name("pythonw.exe")
     exe = pythonw if pythonw.exists() else python  # pythonw avoids a console window
-    log = core.home_data() / "monitor.log"
+    log = settings.home_data() / "monitor.log"
     return (
         "@echo off\r\n"
         f'cd /d "{_workdir()}"\r\n'
@@ -262,7 +262,11 @@ def notify(message):
     """Best-effort desktop alert. Text is passed as data (argv/env), never as code."""
     try:
         if sys.platform == "darwin":
-            script = "on run argv\ndisplay notification (item 1 of argv) with title (item 2 of argv)\nend run"
+            script = (
+                "on run argv\n"
+                "display notification (item 1 of argv) with title (item 2 of argv)\n"
+                "end run"
+            )
             cmd = ["/usr/bin/osascript", "-e", script, message, ALERT_TITLE]
             env = None
         elif sys.platform == "win32":

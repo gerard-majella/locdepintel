@@ -8,7 +8,7 @@ from unittest import mock
 
 from helpers import fake_osv, isolate
 
-from locdepintel import core
+from locdepintel import advisories, core
 
 
 class AssessTests(unittest.TestCase):
@@ -46,14 +46,14 @@ class AssessTests(unittest.TestCase):
         return fake
 
     def test_advisory_count_is_total_unique_not_last_package(self):
-        with mock.patch.object(core, "request_json", side_effect=self.fake_osv([3, 0, 0, 1])):
+        with mock.patch.object(advisories, "request_json", side_effect=self.fake_osv([3, 0, 0, 1])):
             result = core.assess()
         self.assertEqual(result["advisories"], 4)
         self.assertIn("4 unique OSV advisories", core.state()["checks"][0]["note"])
 
     def test_advisory_details_fetched_in_parallel(self):
         per_pkg = [10, 10, 10, 10]  # 40 advisories x 0.1 s = 4 s if sequential
-        with mock.patch.object(core, "request_json", side_effect=self.fake_osv(per_pkg, 0.1)):
+        with mock.patch.object(advisories, "request_json", side_effect=self.fake_osv(per_pkg, 0.1)):
             started = time.monotonic()
             result = core.assess()
             elapsed = time.monotonic() - started
@@ -65,11 +65,11 @@ class AssessTests(unittest.TestCase):
 
     def test_malware_flagged_and_never_cleared_by_an_offline_check(self):
         with mock.patch.object(
-            core, "request_json", side_effect=fake_osv({"pkg1": ["MAL-2026-1"]})
+            advisories, "request_json", side_effect=fake_osv({"pkg1": ["MAL-2026-1"]})
         ):
             self.assertEqual(core.assess()["state"], "ok")
         self.assertEqual(core.state()["stats"]["malware"], 1)
-        with mock.patch.object(core, "request_json", side_effect=OSError("offline")):
+        with mock.patch.object(advisories, "request_json", side_effect=OSError("offline")):
             self.assertEqual(core.assess()["state"], "error")
         self.assertEqual(core.state()["stats"]["malware"], 1)  # offline must not look clean
 
@@ -79,7 +79,7 @@ class AssessTests(unittest.TestCase):
                 return {"results": [{"vulns": [{"id": "GHSA-w"}]} for _ in payload["queries"]]}
             return {"id": "GHSA-w", "withdrawn": "2026-01-01T00:00:00Z"}
 
-        with mock.patch.object(core, "request_json", side_effect=fake):
+        with mock.patch.object(advisories, "request_json", side_effect=fake):
             core.assess()
         self.assertEqual(core.state()["findings"], [])
 
@@ -91,7 +91,7 @@ class AssessTests(unittest.TestCase):
                 raise OSError("timeout")
             return base(url, payload, timeout)
 
-        with mock.patch.object(core, "request_json", side_effect=flaky):
+        with mock.patch.object(advisories, "request_json", side_effect=flaky):
             result = core.assess()
         self.assertEqual(result["state"], "ok")
         self.assertEqual(len(core.state()["findings"]), 2)

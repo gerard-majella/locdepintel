@@ -3,6 +3,7 @@
 import io
 import json
 import unittest
+import urllib.request
 from unittest import mock
 
 from helpers import fake_osv, isolate, mock_network, python_venv
@@ -36,7 +37,7 @@ class ThreatPulseTests(unittest.TestCase):
             items = malware if "type=malware" in req.full_url else reviewed
             return io.BytesIO(json.dumps(list(items)).encode())
 
-        return mock.patch.object(core.urllib.request, "urlopen", side_effect=urlopen)
+        return mock.patch.object(urllib.request, "urlopen", side_effect=urlopen)
 
     def test_local_status_requires_a_version_aware_match(self):
         with self.feed([ghsa("GHSA-one", "urllib3"), ghsa("GHSA-three", "urllib3")]):
@@ -53,7 +54,7 @@ class ThreatPulseTests(unittest.TestCase):
     def test_feed_failure_keeps_previous_advisories(self):
         with self.feed([ghsa("GHSA-one", "urllib3")]):
             core.sync_pulse()
-        with mock.patch.object(core.urllib.request, "urlopen", side_effect=OSError("offline")):
+        with mock.patch.object(urllib.request, "urlopen", side_effect=OSError("offline")):
             self.assertEqual(core.sync_pulse()["state"], "error")
         self.assertEqual(len(core.pulse()["advisories"]), 1)
 

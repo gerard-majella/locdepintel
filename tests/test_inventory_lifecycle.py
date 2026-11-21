@@ -6,7 +6,7 @@ from unittest import mock
 
 import helpers
 
-from locdepintel import core
+from locdepintel import advisories, core
 
 
 def npm_project(path, packages, exist_ok=False):
@@ -52,7 +52,9 @@ class LifecycleTests(unittest.TestCase):
 
     def test_removing_a_root_retires_its_packages_findings_and_envs(self):
         core.scan(self.config(self.root_a, self.root_b))
-        with mock.patch.object(core, "request_json", side_effect=fake_osv_flagging("evil-pkg")):
+        with mock.patch.object(
+            advisories, "request_json", side_effect=fake_osv_flagging("evil-pkg")
+        ):
             core.assess()
         self.assertEqual(len(self.active_findings()), 1)
 
