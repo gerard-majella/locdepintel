@@ -131,6 +131,13 @@ def db():
 
 
 # Only inspect package metadata and trusted lockfiles; do NOT run the environment's python executable.
+def normalize_name(ecosystem, name):
+    """PyPI names compare case-insensitively with runs of - _ . equivalent (PEP 503)."""
+    if ecosystem == "PyPI":
+        return re.sub(r"[-_.]+", "-", name).lower()
+    return name
+
+
 def metadata_name_version(path):
     try:
         s = (path / "METADATA").read_text(encoding="utf-8", errors="replace")[:25000]
@@ -171,7 +178,7 @@ def python_env(path):
                 if not nv:
                     continue
                 name, ver = nv
-                key = (name.lower().replace("_", "-"), ver)
+                key = (normalize_name("PyPI", name), ver)
                 if key not in seen:
                     records.append(("PyPI", name, ver, "unknown"))
                     seen.add(key)
@@ -245,60 +252,93 @@ def npm_lock(project):
     return out
 
 
-def discover(roots, max_depth=5, max_dirs=30000):
-    """Conservative bounded scan, no symlinks followed, skips huge vendor/system dirs."""
-    exclusions = {
-        ".git",
-        ".cache",
-        ".npm",
-        ".next",
-        ".nuxt",
-        ".venv-cache",
-        "dist",
-        "build",
-        "coverage",
-        ".tox",
-        ".mypy_cache",
-        "__pycache__",
-        "site-packages",
-        "node_modules",
-        ".rustup",
-        ".cargo",
-        ".gradle",
-    }
+EXCLUDED_DIRS = {
+    ".git",
+    ".cache",
+    ".npm",
+    ".next",
+    ".nuxt",
+    ".venv-cache",
+    "dist",
+    "build",
+    "coverage",
+    ".tox",
+    ".mypy_cache",
+    "__pycache__",
+    "site-packages",
+    "node_modules",
+    ".rustup",
+    ".cargo",
+    ".gradle",
+}
+
+
+def discover_detailed(roots, max_depth=5, max_dirs=30000):
+    """Bounded walk of the configured roots. Never follows symlinks.
+
+    Returns ``(environments, warnings, complete_roots)``. ``complete_roots`` holds the
+    resolved roots that were walked to the end; only inside those can a missing
+    environment safely be treated as removed.
+    """
     environments = []
     visited = 0
     warnings = []
+    complete_roots = set()
     seen_roots = set()
     for root in roots:
         root = pathlib.Path(root).expanduser().resolve()
         if str(root) in seen_roots:
             continue
         seen_roots.add(str(root))
-        if not root.exists() or not root.is_dir():
+        if not root.is_dir():
             warnings.append(f"Root unavailable: {root}")
             continue
         for parent, dirs, files in os.walk(root, followlinks=False):
             visited += 1
-            depth = len(pathlib.Path(parent).relative_to(root).parts)
             if visited > max_dirs:
                 warnings.append("Directory cap reached; discovery incomplete")
-                return environments, warnings
-            dirs[:] = [
-                d
-                for d in dirs
-                if d not in exclusions and not (pathlib.Path(parent) / d).is_symlink()
-            ]
+                return environments, warnings, complete_roots
+            here = pathlib.Path(parent)
+            depth = len(here.relative_to(root).parts)
+            dirs[:] = [d for d in dirs if d not in EXCLUDED_DIRS and not (here / d).is_symlink()]
             if depth >= max_depth:
                 dirs[:] = []
-            here = pathlib.Path(parent)
             if "pyvenv.cfg" in files:
                 environments.append((str(here), "Python", python_env(here)))
                 dirs[:] = []
                 continue
             if "package-lock.json" in files:
                 environments.append((str(here), "npm", npm_lock(here)))
+        complete_roots.add(str(root))
+    return environments, warnings, complete_roots
+
+
+def discover(roots, max_depth=5, max_dirs=30000):
+    """Backwards-compatible wrapper returning ``(environments, warnings)``."""
+    environments, warnings, _ = discover_detailed(roots, max_depth, max_dirs)
     return environments, warnings
+
+
+def _under(path, root):
+    try:
+        return pathlib.PurePath(path).is_relative_to(root)
+    except (TypeError, ValueError):
+        return False
+
+
+def classify_unseen(env_path, roots, complete_roots):
+    """Decide what an environment that was not found in this scan means.
+
+    * ``out-of-scope``: not under any configured root any more (root removed in settings).
+    * ``missing``: under a root that was fully walked, so it really is gone.
+    * ``unknown``: under a root that was unavailable or cut off; keep last known data.
+    """
+    containing = [r for r in roots if _under(env_path, r)]
+    if not containing:
+        return "out-of-scope"
+    if any(r in complete_roots for r in containing):
+        return "missing"
+    return "unknown"
 
 
 def global_packages():
@@ -315,23 +355,29 @@ def global_packages():
     return [("Current Python interpreter: " + sys.executable, "Python", out)]
 
 
+EVENT_SQL = (
+    "INSERT INTO events(occurred,kind,env,ecosystem,name,version,description) "
+    "VALUES (?,?,?,?,?,?,?)"
+)
+
+
 def scan(c=None):
     c = c or load_config()
     started = timestamp()
+    roots = [str(pathlib.Path(r).expanduser().resolve()) for r in c.get("roots", [])]
     with db() as con:
         sid = con.execute(
             "INSERT INTO scans(started,status) VALUES (?,?)", (started, "running")
         ).lastrowid
         try:
-            found, warnings = discover(
-                c.get("roots", []), int(c.get("max_depth", 5)), int(c.get("max_dirs", 30000))
+            found, warnings, complete_roots = discover_detailed(
+                roots, int(c.get("max_depth", 5)), int(c.get("max_dirs", 30000))
             )
             if c.get("include_global"):
                 found += global_packages()
             now = timestamp()
             active = {}
             envpaths = set()
-            total = 0
             for path, ecosystem, records in found:
                 envpaths.add(path)
                 count = 0
@@ -340,21 +386,17 @@ def scan(c=None):
                     ver = ver.strip()
                     if not name or not ver or len(name) > 220 or len(ver) > 120:
                         continue
-                    key = (
-                        path,
-                        eco,
-                        name.lower().replace("_", "-") if eco == "PyPI" else name,
-                        ver,
-                    )
+                    key = (path, eco, normalize_name(eco, name), ver)
                     active[key] = direct
                     count += 1
-                    total += 1
                 con.execute(
-                    "INSERT INTO envs VALUES (?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET last_seen=excluded.last_seen,state=excluded.state,package_count=excluded.package_count",
+                    "INSERT INTO envs VALUES (?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+                    "ecosystem=excluded.ecosystem,last_seen=excluded.last_seen,"
+                    "state=excluded.state,package_count=excluded.package_count",
                     (path, ecosystem, now, "monitored", count),
                 )
             old = {
-                tuple(row[:4])
+                tuple(row)
                 for row in con.execute(
                     "SELECT env,ecosystem,name,version FROM inventory WHERE active=1"
                 )
@@ -362,35 +404,53 @@ def scan(c=None):
             for key, direct in active.items():
                 if key not in old:
                     con.execute(
-                        "INSERT INTO events(occurred,kind,env,ecosystem,name,version,description) VALUES (?,?,?,?,?,?,?)",
-                        (now, "added", *key, "First observed; installation time not verified"),
+                        EVENT_SQL, (now, "added", *key, "First observed; install time unknown")
                     )
                 con.execute(
-                    "INSERT INTO inventory(env,ecosystem,name,version,direct,discovered,seen,active) VALUES (?,?,?,?,?,?,?,1) ON CONFLICT(env,ecosystem,name,version) DO UPDATE SET seen=excluded.seen,active=1,direct=excluded.direct",
+                    "INSERT INTO inventory(env,ecosystem,name,version,direct,discovered,seen,active)"
+                    " VALUES (?,?,?,?,?,?,?,1) ON CONFLICT(env,ecosystem,name,version) DO UPDATE"
+                    " SET seen=excluded.seen,active=1,direct=excluded.direct",
                     (*key, direct, now, now),
                 )
-            # Avoid marking entries from out-of-scope roots removed, or on incomplete traversal.
-            if not warnings:
-                for key in old - active.keys():
-                    if key[0] not in envpaths and not any(
-                        str(key[0]).startswith(str(pathlib.Path(r).expanduser().resolve()) + os.sep)
-                        or str(key[0]) == str(pathlib.Path(r).expanduser().resolve())
-                        for r in c.get("roots", [])
-                    ):
-                        continue
-                    con.execute(
-                        "UPDATE inventory SET active=0 WHERE env=? AND ecosystem=? AND name=? AND version=?",
-                        key,
-                    )
-                    con.execute(
-                        "INSERT INTO events(occurred,kind,env,ecosystem,name,version,description) VALUES (?,?,?,?,?,?,?)",
-                        (
-                            now,
-                            "removed",
-                            *key,
-                            "No longer found in observed environment; not proof of uninstall command",
-                        ),
-                    )
+
+            # Retire what was not seen, but only when we can be sure why it was not seen.
+            removed = out_of_scope = 0
+            for key in old - active.keys():
+                env = key[0]
+                if env in envpaths:
+                    verdict = "missing"  # environment read fine, this package is gone from it
+                else:
+                    verdict = classify_unseen(env, roots, complete_roots)
+                if verdict == "unknown":
+                    continue
+                con.execute(
+                    "UPDATE inventory SET active=0 "
+                    "WHERE env=? AND ecosystem=? AND name=? AND version=?",
+                    key,
+                )
+                if verdict == "missing":
+                    removed += 1
+                    note = "No longer found in observed environment; not proof of uninstall"
+                    con.execute(EVENT_SQL, (now, "removed", *key, note))
+                else:
+                    out_of_scope += 1
+                    note = "Folder no longer in scan scope; stopped monitoring"
+                    con.execute(EVENT_SQL, (now, "out-of-scope", *key, note))
+
+            for (env,) in con.execute("SELECT path FROM envs WHERE state='monitored'").fetchall():
+                if env in envpaths:
+                    continue
+                verdict = classify_unseen(env, roots, complete_roots)
+                if verdict != "unknown":
+                    con.execute("UPDATE envs SET state=? WHERE path=?", (verdict, env))
+
+            # Findings only make sense for packages that are still monitored.
+            con.execute(
+                "UPDATE findings SET active=0 WHERE active=1 AND NOT EXISTS ("
+                " SELECT 1 FROM inventory i WHERE i.active=1 AND i.env=findings.env"
+                " AND i.ecosystem=findings.ecosystem AND i.name=findings.name"
+                " AND i.version=findings.version)"
+            )
             con.execute(
                 "UPDATE scans SET ended=?,status=?,packages=?,error=? WHERE id=?",
                 (now, "partial" if warnings else "ok", len(active), "\n".join(warnings), sid),
@@ -400,7 +460,8 @@ def scan(c=None):
                 "environments": len(found),
                 "packages": len(active),
                 "added": len(active.keys() - old),
-                "removed": len(old - active.keys()) if not warnings else 0,
+                "removed": removed,
+                "out_of_scope": out_of_scope,
                 "warnings": warnings,
             }
         except Exception as ex:
@@ -777,13 +838,13 @@ def pulse(limit=160):
         ).fetchall()
         # Exact local advisory match established by independent OSV version-aware checks.
         active = {
-            (r["advisory"], r["ecosystem"], r["name"].lower().replace("_", "-"))
+            (r["advisory"], r["ecosystem"], normalize_name(r["ecosystem"], r["name"]))
             for r in con.execute(
                 "SELECT DISTINCT advisory,ecosystem,name FROM findings WHERE active=1"
             )
         }
         inventory_names = {
-            (r["ecosystem"], r["name"].lower().replace("_", "-"))
+            (r["ecosystem"], normalize_name(r["ecosystem"], r["name"]))
             for r in con.execute("SELECT DISTINCT ecosystem,name FROM inventory WHERE active=1")
         }
         out = []
@@ -793,13 +854,14 @@ def pulse(limit=160):
             a["local_status"] = (
                 "affected"
                 if any(
-                    (a["id"], p["ecosystem"], p["name"].lower().replace("_", "-")) in active
+                    (a["id"], p["ecosystem"], normalize_name(p["ecosystem"], p["name"])) in active
                     for p in a["affected"]
                 )
                 else (
                     "package-present"
                     if any(
-                        (p["ecosystem"], p["name"].lower().replace("_", "-")) in inventory_names
+                        (p["ecosystem"], normalize_name(p["ecosystem"], p["name"]))
+                        in inventory_names
                         for p in a["affected"]
                     )
                     else "not-detected"
@@ -826,7 +888,7 @@ def grouped_findings():
     grouped = {}
     for row in rows:
         r = dict(row)
-        k = (r["ecosystem"], r["name"].lower().replace("_", "-"), r["version"])
+        k = (r["ecosystem"], normalize_name(r["ecosystem"], r["name"]), r["version"])
         if k not in grouped:
             grouped[k] = {
                 "ecosystem": r["ecosystem"],

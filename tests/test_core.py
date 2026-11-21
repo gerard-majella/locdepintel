@@ -100,9 +100,15 @@ class Tests(unittest.TestCase):
 
     def test_missing_root_is_partial(self):
         core.scan(self.c)
-        r = core.scan(dict(self.c, roots=[str(self.root / "nonexistent")]))
+        # Keeping the original root and adding an unavailable one: partial, nothing lost.
+        r = core.scan(dict(self.c, roots=[str(self.root), str(self.root / "nonexistent")]))
         self.assertTrue(r["warnings"])
         self.assertEqual(core.state()["stats"]["packages"], 2)
+        # Replacing the root entirely: old packages are out of scope, not silently kept.
+        r = core.scan(dict(self.c, roots=[str(self.root / "nonexistent")]))
+        self.assertTrue(r["warnings"])
+        self.assertEqual(r["out_of_scope"], 2)
+        self.assertEqual(core.state()["stats"]["packages"], 0)
 
 
 if __name__ == "__main__":
