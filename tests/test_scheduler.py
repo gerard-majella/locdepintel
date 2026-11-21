@@ -77,6 +77,7 @@ class LinuxTests(SchedulerTestCase):
             with self.assertRaisesRegex(scheduler.SchedulerError, r"crontab -e[\s\S]*0 \*/6"):
                 scheduler.install(6)
 
+    @unittest.skipIf(sys.platform == "win32", "cron lines are for POSIX shells")
     def test_cron_hint_is_shell_safe(self):
         with mock.patch.object(scheduler, "_workdir", return_value="/home/o'brien/$HOME/src"):
             line = scheduler._cron_hint(6)
@@ -157,6 +158,9 @@ class WindowsTests(SchedulerTestCase):
         ):
             scheduler.install(6)
         wrapper = self.home / "data/run-once.cmd"
+        raw = wrapper.read_bytes()
+        self.assertNotIn(b"\r\r\n", raw)  # no doubled line endings on Windows
+        self.assertEqual(raw.count(b"\r\n"), 3)
         text = wrapper.read_text()
         self.assertIn('"C:\\Program Files\\Python313\\python.exe" -m locdepintel run-once', text)
         self.assertIn("cd /d", text)
