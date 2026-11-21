@@ -9,6 +9,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -380,6 +381,24 @@ def request_json(url, payload=None, timeout=20):
         return json.load(resp)
 
 
+OSV_DETAIL_WORKERS = 8
+
+
+def _fetch_one(aid):
+    try:
+        return aid, request_json("https://api.osv.dev/v1/vulns/" + urllib.parse.quote(aid, safe=""))
+    except (OSError, ValueError, urllib.error.URLError):
+        return aid, {}  # summary falls back to a generic label; the match itself still counts
+
+
+def fetch_advisory_details(ids):
+    """Download OSV advisory records concurrently (bounded, to stay polite to the API)."""
+    if not ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=OSV_DETAIL_WORKERS) as pool:
+        return dict(pool.map(_fetch_one, sorted(ids)))
+
+
 def assess(batch_size=100):
     """Exact package/version OSV checks; failures never erase earlier findings or produce false clean state."""
     with db() as con:
@@ -419,7 +438,7 @@ def assess(batch_size=100):
                     if len(results) != len(pending):
                         raise ValueError("OSV response length mismatch")
                     later = []
-                    for (q, key), res in zip(pending, results):
+                    for (q, key), res in zip(pending, results, strict=True):
                         findings.setdefault(key, set()).update(
                             v["id"] for v in res.get("vulns", []) if v.get("id")
                         )
@@ -430,19 +449,12 @@ def assess(batch_size=100):
                     raise ValueError("OSV pagination limit reached; check incomplete")
                 checked += len(group)
             # Fetch advisory details after all batch calls have succeeded.
-            ids = {id for matches in findings.values() for id in matches}
-            detail = {}
-            for aid in ids:
-                try:
-                    detail[aid] = request_json(
-                        "https://api.osv.dev/v1/vulns/" + urllib.parse.quote(aid, safe="")
-                    )
-                except (OSError, ValueError, urllib.error.URLError):
-                    detail[aid] = {}
+            unique_ids = {aid for matches in findings.values() for aid in matches}
+            detail = fetch_advisory_details(unique_ids)
             now = timestamp()
             con.execute("UPDATE findings SET active=0")
-            for (eco, name, ver), ids in findings.items():
-                for aid in ids:
+            for (eco, name, ver), matched in findings.items():
+                for aid in matched:
                     info = detail.get(aid, {})
                     if info.get("withdrawn"):
                         continue
@@ -489,12 +501,12 @@ def assess(batch_size=100):
                             )
             con.execute(
                 "INSERT INTO checks(timestamp,state,note,packages) VALUES (?,?,?,?)",
-                (now, "ok", f"{len(ids)} unique OSV advisories", checked),
+                (now, "ok", f"{len(unique_ids)} unique OSV advisories", checked),
             )
             return {
                 "state": "ok",
                 "checked": checked,
-                "advisories": len(ids),
+                "advisories": len(unique_ids),
                 "active_findings": con.execute(
                     "SELECT count(*) FROM findings WHERE active=1"
                 ).fetchone()[0],
