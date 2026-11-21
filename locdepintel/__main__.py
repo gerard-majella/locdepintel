@@ -5,7 +5,17 @@ import pathlib
 import sys
 import webbrowser
 
-from . import core, parsers, scheduler, server
+# Checked before importing the rest of the package, which needs 3.11 features (tomllib).
+if sys.version_info < (3, 11):
+    found = ".".join(map(str, sys.version_info[:3]))
+    sys.exit(
+        f"LocDepIntel needs Python 3.11 or newer, but this is Python {found} ({sys.executable}).\n"
+        "Install a current Python from https://www.python.org/downloads/ "
+        "(macOS with Homebrew: brew install python@3.13),\n"
+        "then run it with that version, for example: python3.13 -m locdepintel serve"
+    )
+
+from . import core, parsers, scheduler, server  # noqa: E402
 
 
 def run_scan(online=True, include_pulse=False):

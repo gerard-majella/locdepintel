@@ -34,6 +34,19 @@ class CliTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.home = tmp.name
 
+    def test_old_python_gets_a_clear_message_not_a_traceback(self):
+        code = (
+            "import sys, runpy; sys.version_info = (3, 9, 6, 'final', 0);"
+            "sys.argv = ['locdepintel', 'serve'];"
+            "runpy.run_module('locdepintel', run_name='__main__')"
+        )
+        out = subprocess.run(
+            [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=20
+        )
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("needs Python 3.11 or newer, but this is Python 3.9.6", out.stderr)
+        self.assertNotIn("Traceback", out.stderr)
+
     def test_help_lists_commands(self):
         out = run_cli("--help", home=self.home)
         self.assertEqual(out.returncode, 0, out.stderr)
