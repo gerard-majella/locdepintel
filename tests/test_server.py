@@ -2,24 +2,19 @@
 
 import http.client
 import json
-import pathlib
 import tempfile
 import threading
 import unittest
 from unittest import mock
+
+from helpers import isolate
 
 from locdepintel import core, server
 
 
 class ServerTestCase(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        data = pathlib.Path(tmp.name) / "data"
-        data.mkdir()
-        patcher = mock.patch.object(core, "home_data", lambda: data)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        isolate(self)
 
         self.srv = server.make_server(port=0)  # 0 = let the OS pick a free port
         self.port = self.srv.server_address[1]

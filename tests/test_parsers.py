@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from helpers import isolate
+
 from locdepintel import core, parsers
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -27,6 +29,58 @@ def materialize(name):
 
 def as_set(records):
     return {(name, version, direct) for _eco, name, version, direct in records}
+
+
+class NpmLockTests(unittest.TestCase):
+    def lock(self, packages, manifest=None):
+        target = pathlib.Path(tempfile.mkdtemp())
+        (target / "package-lock.json").write_text(
+            json.dumps({"lockfileVersion": 3, "packages": {"": {}, **packages}})
+        )
+        if manifest is not None:
+            (target / "package.json").write_text(json.dumps(manifest))
+        return parsers.npm_lock(target)
+
+    def test_direct_vs_transitive_from_package_json(self):
+        records = self.lock(
+            {"node_modules/top": {"version": "1.0.0"}, "node_modules/child": {"version": "2.0.0"}},
+            {"dependencies": {"top": "^1"}},
+        )
+        self.assertEqual({r[1]: r[3] for r in records}, {"top": "direct", "child": "transitive"})
+
+    def test_workspace_members_and_links_not_reported(self):
+        records = self.lock(
+            {
+                "packages/internal-app": {"version": "0.0.1"},
+                "node_modules/internal-app": {"resolved": "packages/internal-app", "link": True},
+                "node_modules/lodash": {"version": "4.17.20"},
+            },
+            {"workspaces": ["packages/*"]},
+        )
+        self.assertEqual({r[1] for r in records}, {"lodash"})
+
+    def test_aliased_package_reports_real_name(self):
+        records = self.lock(
+            {"node_modules/string-width-cjs": {"name": "string-width", "version": "4.2.3"}}
+        )
+        self.assertEqual(records[0][1], "string-width")
+
+    def test_lockfile_v1_nested_dependencies(self):
+        target = pathlib.Path(tempfile.mkdtemp())
+        (target / "package-lock.json").write_text(
+            json.dumps(
+                {
+                    "lockfileVersion": 1,
+                    "dependencies": {
+                        "a": {"version": "1.0.0", "dependencies": {"b": {"version": "2.0.0"}}},
+                        "local": {"version": "file:../local"},
+                    },
+                }
+            )
+        )
+        self.assertEqual(
+            {(r[1], r[2]) for r in parsers.npm_lock(target)}, {("a", "1.0.0"), ("b", "2.0.0")}
+        )
 
 
 class YarnTests(unittest.TestCase):
@@ -267,15 +321,11 @@ class GlobalInstallTests(unittest.TestCase):
         self.assertEqual(names, {"typescript", "eslint", "acorn"})  # acorn: hoisted dependency
 
     def test_include_global_is_opt_in_and_retires_when_turned_off(self):
-        data = self.home / "data"
-        data.mkdir()
         nm = self.home / "global/node_modules"
         (nm / "evil-cli").mkdir(parents=True)
         (nm / "evil-cli/package.json").write_text('{"name":"evil-cli","version":"1.0.0"}')
-        with (
-            mock.patch.object(core, "home_data", lambda: data),
-            mock.patch.object(parsers, "global_candidates", lambda: [(str(nm), "npm global")]),
-        ):
+        isolate(self)
+        with mock.patch.object(parsers, "global_candidates", lambda: [(str(nm), "npm global")]):
             cfg = {"roots": [], "include_global": False}
             core.scan(cfg)
             self.assertEqual(core.inventory(), [])

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from helpers import isolate
+
 from locdepintel import core
 
 # Exactly what DepWatch 0.7 created (no user_version, no advisory cache).
@@ -26,12 +28,7 @@ INSERT INTO findings(env,ecosystem,name,version,advisory,kind,active)
 
 class MigrationTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.data = pathlib.Path(tmp.name)
-        patcher = mock.patch.object(core, "home_data", lambda: self.data)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.data = isolate(self) / "data"
         core._MIGRATED.clear()
         self.addCleanup(core._MIGRATED.clear)
 
@@ -125,12 +122,7 @@ class ConcurrentMigrationTests(unittest.TestCase):
 
 class AdvisoryCacheTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        data = pathlib.Path(tmp.name)
-        patcher = mock.patch.object(core, "home_data", lambda: data)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        isolate(self)
 
     def test_details_cached_for_a_day(self):
         calls = []

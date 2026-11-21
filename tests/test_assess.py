@@ -1,26 +1,19 @@
 """Advisory checking against OSV (network mocked)."""
 
 import json
-import pathlib
-import tempfile
 import threading
 import time
 import unittest
 from unittest import mock
+
+from helpers import fake_osv, isolate
 
 from locdepintel import core
 
 
 class AssessTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        base = pathlib.Path(tmp.name)
-        data = base / "data"
-        data.mkdir()
-        patcher = mock.patch.object(core, "home_data", lambda: data)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        base = isolate(self)
         project = base / "proj"
         project.mkdir()
         lock = {"lockfileVersion": 3, "packages": {"": {}}}
@@ -69,6 +62,26 @@ class AssessTests(unittest.TestCase):
         self.assertGreater(self.max_in_flight, 1)
         self.assertLessEqual(self.max_in_flight, core.OSV_DETAIL_WORKERS)  # polite to OSV
         self.assertLess(elapsed, 2.0)
+
+    def test_malware_flagged_and_never_cleared_by_an_offline_check(self):
+        with mock.patch.object(
+            core, "request_json", side_effect=fake_osv({"pkg1": ["MAL-2026-1"]})
+        ):
+            self.assertEqual(core.assess()["state"], "ok")
+        self.assertEqual(core.state()["stats"]["malware"], 1)
+        with mock.patch.object(core, "request_json", side_effect=OSError("offline")):
+            self.assertEqual(core.assess()["state"], "error")
+        self.assertEqual(core.state()["stats"]["malware"], 1)  # offline must not look clean
+
+    def test_withdrawn_advisories_ignored(self):
+        def fake(url, payload=None, timeout=20):
+            if "querybatch" in url:
+                return {"results": [{"vulns": [{"id": "GHSA-w"}]} for _ in payload["queries"]]}
+            return {"id": "GHSA-w", "withdrawn": "2026-01-01T00:00:00Z"}
+
+        with mock.patch.object(core, "request_json", side_effect=fake):
+            core.assess()
+        self.assertEqual(core.state()["findings"], [])
 
     def test_one_failed_detail_fetch_does_not_fail_the_check(self):
         base = self.fake_osv([2, 0, 0, 0])

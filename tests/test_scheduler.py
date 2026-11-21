@@ -6,11 +6,12 @@ import plistlib
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest import mock
 
-from locdepintel import core, scheduler
+from helpers import isolate
+
+from locdepintel import scheduler
 
 
 def ok(*_args, **_kwargs):
@@ -19,12 +20,8 @@ def ok(*_args, **_kwargs):
 
 class SchedulerTestCase(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.home = pathlib.Path(tmp.name)
-        (self.home / "data").mkdir()
+        self.home = isolate(self)  # data folder is self.home / "data"
         for patcher in (
-            mock.patch.object(core, "home_data", lambda: self.home / "data"),
             mock.patch.object(pathlib.Path, "home", lambda: self.home),
             mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(self.home / ".config")}),
         ):

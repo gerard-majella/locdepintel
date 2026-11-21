@@ -22,7 +22,8 @@ USER_AGENT = f"LocDepIntel/{__version__} (+https://github.com/gerard-majella/loc
 
 
 def timestamp():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Millisecond precision: two quick checks in the same second must still order correctly.
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def home_data():

@@ -1,21 +1,18 @@
 """Inventory must reflect the current scan scope: no stale packages, no stale alerts."""
 
-import json
-import pathlib
 import shutil
-import tempfile
 import unittest
 from unittest import mock
+
+import helpers
 
 from locdepintel import core
 
 
-def npm_project(path, packages):
-    path.mkdir(parents=True)
-    lock = {"lockfileVersion": 3, "packages": {"": {}}}
-    for name, version in packages.items():
-        lock["packages"][f"node_modules/{name}"] = {"version": version}
-    (path / "package-lock.json").write_text(json.dumps(lock))
+def npm_project(path, packages, exist_ok=False):
+    if path.exists() and not exist_ok:
+        raise FileExistsError(path)
+    return helpers.npm_project(path, packages)
 
 
 def fake_osv_flagging(bad_name):
@@ -34,14 +31,7 @@ def fake_osv_flagging(bad_name):
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.base = pathlib.Path(tmp.name)
-        data = self.base / "data"
-        data.mkdir()
-        patcher = mock.patch.object(core, "home_data", lambda: data)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.base = helpers.isolate(self)
         self.root_a = self.base / "a"
         self.root_b = self.base / "b"
         npm_project(self.root_a / "app1", {"evil-pkg": "1.0.0"})
@@ -111,6 +101,23 @@ class LifecycleTests(unittest.TestCase):
         result = core.scan(self.config(self.root_a, self.root_b))
         self.assertEqual(result["removed"], 0)
         self.assertEqual(result["added"], 0)
+
+    def test_version_change_recorded_as_added_and_removed(self):
+        core.scan(self.config(self.root_a, self.root_b))
+        npm_project(self.root_b / "app2", {"left-pad": "1.4.0"}, exist_ok=True)
+        result = core.scan(self.config(self.root_a, self.root_b))
+        self.assertEqual((result["added"], result["removed"]), (1, 1))
+        versions = {p["version"] for p in core.inventory() if p["name"] == "left-pad"}
+        self.assertEqual(versions, {"1.4.0"})
+        kinds = [e["kind"] for e in core.state()["events"][:2]]
+        self.assertEqual(sorted(kinds), ["added", "removed"])
+
+    def test_replacing_all_roots_retires_everything_old(self):
+        core.scan(self.config(self.root_a, self.root_b))
+        result = core.scan(self.config(self.base / "nonexistent"))
+        self.assertTrue(result["warnings"])
+        self.assertEqual(result["out_of_scope"], 2)
+        self.assertEqual(core.inventory(), [])
 
     def test_root_re_added_reactivates_packages(self):
         core.scan(self.config(self.root_a, self.root_b))
