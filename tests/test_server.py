@@ -123,6 +123,21 @@ class RequestForgeryTests(ServerTestCase):
         self.assertEqual(resp.status, 200, data)
 
 
+class SettingsTests(ServerTestCase):
+    def post(self, body):
+        headers = dict(self.cookie(), **{"Content-Type": "application/json"})
+        return self.request("POST", "/api/roots", body=json.dumps(body), headers=headers)
+
+    def test_include_global_toggle_saved(self):
+        resp, _ = self.post({"roots": [tempfile.mkdtemp()], "include_global": True})
+        self.assertEqual(resp.status, 200)
+        self.assertTrue(core.load_config()["include_global"])
+
+    def test_include_global_must_be_boolean(self):
+        resp, _ = self.post({"roots": [tempfile.mkdtemp()], "include_global": "yes"})
+        self.assertEqual(resp.status, 400)
+
+
 class PortTests(ServerTestCase):
     def test_host_allow_list_follows_the_actual_port(self):
         self.assertNotEqual(self.port, 8765)

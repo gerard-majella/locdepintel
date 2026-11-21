@@ -1,6 +1,5 @@
 """Read-only inventory and OSV monitoring. Only package metadata is read; project code is never imported."""
 
-import importlib.metadata
 import json
 import os
 import pathlib
@@ -13,7 +12,8 @@ import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from . import __version__
+from . import __version__, parsers
+from .parsers import npm_lock, python_env  # noqa: F401  (public API)
 
 APP = "LocDepIntel"
 USER_AGENT = f"LocDepIntel/{__version__} (+https://github.com/gerard-majella/locdepintel)"
@@ -138,120 +138,6 @@ def normalize_name(ecosystem, name):
     return name
 
 
-def metadata_name_version(path):
-    try:
-        s = (path / "METADATA").read_text(encoding="utf-8", errors="replace")[:25000]
-        n = re.search(r"^Name:\s*(.+)$", s, re.M | re.I)
-        v = re.search(r"^Version:\s*(.+)$", s, re.M | re.I)
-        if n and v:
-            return (n.group(1).strip(), v.group(1).strip())
-    except (OSError, UnicodeError):
-        pass
-    return None
-
-
-def python_env(path):
-    records = []
-    seen = set()
-    paths = []
-    for rel in ["lib", "Lib"]:
-        top = path / rel
-        if not top.is_dir():
-            continue
-        try:
-            if rel == "Lib":
-                paths.append(top / "site-packages")
-            else:
-                for p in top.iterdir():
-                    if p.is_dir() and p.name.startswith("python"):
-                        paths.append(p / "site-packages")
-        except OSError:
-            continue
-    for directory in paths:
-        if not directory.is_dir():
-            continue
-        try:
-            for d in directory.iterdir():
-                if not d.name.endswith(".dist-info") or not d.is_dir():
-                    continue
-                nv = metadata_name_version(d)
-                if not nv:
-                    continue
-                name, ver = nv
-                key = (normalize_name("PyPI", name), ver)
-                if key not in seen:
-                    records.append(("PyPI", name, ver, "unknown"))
-                    seen.add(key)
-        except OSError:
-            pass
-    return records
-
-
-def npm_lock(project):
-    f = project / "package-lock.json"
-    out = []
-    try:
-        package_json = json.loads((project / "package.json").read_text(encoding="utf-8"))
-        declared = set()
-        for section in (
-            "dependencies",
-            "devDependencies",
-            "optionalDependencies",
-            "peerDependencies",
-        ):
-            declared.update(package_json.get(section, {}))
-    except (OSError, ValueError, TypeError):
-        declared = set()
-    try:
-        data = json.loads(f.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    if isinstance(data.get("packages"), dict):
-        for k, v in data["packages"].items():
-            if not k or not isinstance(v, dict) or not v.get("version"):
-                continue
-            # Keys without node_modules/ are workspace members or local folders (e.g. "packages/app").
-            # They are not public registry packages; querying OSV with them leaks internal names.
-            if "node_modules/" not in k or v.get("link"):
-                continue
-            # Nested packages can carry multiple versions of the same dependency.
-            name = k.rsplit("node_modules/", 1)[-1] if "node_modules/" in k else k
-            if not name or name.startswith("../"):
-                continue
-            if name.startswith("@") and "/" not in name:
-                continue
-            out.append(
-                (
-                    "npm",
-                    name,
-                    str(v["version"]),
-                    (
-                        "direct"
-                        if (
-                            k.startswith("node_modules/")
-                            and k.count("node_modules/") == 1
-                            and name in declared
-                        )
-                        else "transitive" if declared else "unknown"
-                    ),
-                )
-            )
-    else:
-        # npm lockfile v1 nested dependency objects
-        def walk(d):
-            if not isinstance(d, dict):
-                return
-            for name, info in d.items():
-                if not isinstance(info, dict):
-                    continue
-                if info.get("version"):
-                    out.append(("npm", name, str(info["version"]), "unknown"))
-                walk(info.get("dependencies", {}))
-
-        walk(data.get("dependencies", {}))
-    return out
-
-
 EXCLUDED_DIRS = {
     ".git",
     ".cache",
@@ -304,11 +190,17 @@ def discover_detailed(roots, max_depth=5, max_dirs=30000):
             if depth >= max_depth:
                 dirs[:] = []
             if "pyvenv.cfg" in files:
-                environments.append((str(here), "Python", python_env(here)))
+                environments.append((str(here), "Python venv", python_env(here)))
                 dirs[:] = []
                 continue
-            if "package-lock.json" in files:
-                environments.append((str(here), "npm", npm_lock(here)))
+            if "conda-meta" in dirs:
+                environments.append((str(here), "Python conda", python_env(here)))
+                # A conda base install keeps further environments in envs/.
+                dirs[:] = [d for d in dirs if d == "envs"]
+                continue
+            project = parsers.project_lockfiles(here, set(files))
+            if project:
+                environments.append((str(here), project[0], project[1]))
         complete_roots.add(str(root))
     return environments, warnings, complete_roots
 
@@ -341,18 +233,13 @@ def classify_unseen(env_path, roots, complete_roots):
     return "unknown"
 
 
-def global_packages():
+def global_environments(candidates=None):
+    """Opt-in: well-known global npm, Python and pipx locations that exist on this machine."""
     out = []
-    # only scans this interpreter, never imports distributions
-    try:
-        for x in importlib.metadata.distributions():
-            name = x.metadata.get("Name")
-            ver = x.version
-            if name and ver:
-                out.append(("PyPI", name, ver, "unknown"))
-    except Exception:
-        pass
-    return [("Current Python interpreter: " + sys.executable, "Python", out)]
+    for path, kind in parsers.global_candidates() if candidates is None else candidates:
+        if pathlib.Path(path).is_dir():
+            out.append((path, kind, parsers.read_global(path, kind)))
+    return out
 
 
 EVENT_SQL = (
@@ -374,7 +261,12 @@ def scan(c=None):
                 roots, int(c.get("max_depth", 5)), int(c.get("max_dirs", 30000))
             )
             if c.get("include_global"):
-                found += global_packages()
+                candidates = parsers.global_candidates()
+                found += global_environments(candidates)
+                # Global locations count as fully read scopes, so one that disappears is
+                # "missing" and turning the option off makes them "out-of-scope".
+                roots = roots + [path for path, _ in candidates]
+                complete_roots = complete_roots | {path for path, _ in candidates}
             now = timestamp()
             active = {}
             envpaths = set()

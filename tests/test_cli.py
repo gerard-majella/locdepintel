@@ -50,6 +50,11 @@ class CliTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn('"packages": 1', out.stdout)
 
+    def test_globals_toggle(self):
+        self.assertIn("off", run_cli("globals", home=self.home).stdout)
+        self.assertIn("on", run_cli("globals", "on", home=self.home).stdout)
+        self.assertIn("Global installs: on", run_cli("globals", home=self.home).stdout)
+
     def test_serve_rejects_bad_port_with_message(self):
         out = run_cli("serve", "--port", "80", "--no-browser", home=self.home)
         self.assertNotEqual(out.returncode, 0)

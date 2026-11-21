@@ -304,12 +304,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def post_roots(self, obj):
         roots = obj.get("roots")
+        include_global = obj.get("include_global")
         if not _valid_path_list(roots, 30):
             return self.send(400, {"error": "Invalid roots"})
+        if include_global is not None and not isinstance(include_global, bool):
+            return self.send(400, {"error": "include_global must be true or false"})
         config = core.load_config()
         config["roots"] = [str(pathlib.Path(x).expanduser().resolve()) for x in roots]
+        if include_global is not None:
+            config["include_global"] = include_global
         core.save_config(config)
-        return self.send(200, {"ok": True, "roots": config["roots"]})
+        return self.send(
+            200,
+            {"ok": True, "roots": config["roots"], "include_global": config.get("include_global")},
+        )
 
     def post_package_intel(self, obj):
         fields = [obj.get(k) for k in ("ecosystem", "name", "env", "version")]

@@ -181,7 +181,7 @@ function renderOverview() {
     envs
       .map(
         (x, i) =>
-          `<button class="env-item" data-envi="${i}"><span><strong>${esc(x.path.split("/").filter(Boolean).slice(-2).join(" / ") || x.path)}</strong><small title="${esc(x.path)}">${esc(x.path)}</small></span><span class="count">${x.package_count} packages</span><span class="count">${groups.filter((g) => g.locations.includes(x.path)).length} affected</span><span class="chev">›</span></button>`,
+          `<button class="env-item" data-envi="${i}"><span><strong>${esc(x.path.split("/").filter(Boolean).slice(-2).join(" / ") || x.path)}</strong><small title="${esc(x.path)}">${esc(x.ecosystem || "")} · ${esc(x.path)}</small></span><span class="count">${x.package_count} packages</span><span class="count">${groups.filter((g) => g.locations.includes(x.path)).length} affected</span><span class="chev">›</span></button>`,
       )
       .join("") ||
     '<p class="footnote">No environments discovered. Open Settings to choose folders and Scan to begin.</p>';
@@ -340,29 +340,72 @@ function groupDetails(g) {
       }),
     );
 }
+function envKind(path) {
+  const env = (overview.environments || []).find((e) => e.path === path);
+  return (env && env.ecosystem) || "";
+}
 function remedial(p) {
+  const kind = envKind(p.env);
+  const name = quote(p.name);
+  const cd = `cd ${quote(p.env)}\n`;
+  const transitive = p.direct === "transitive";
   if (p.ecosystem === "PyPI") {
-    const exe = p.env.endsWith("venv") || p.env.endsWith(".venv") ? p.env + "/bin/python" : null;
-    if (p.direct === "transitive")
+    const msg = transitive
+      ? "This may be transitive. Identify and update the parent dependency; do not uninstall it blindly."
+      : "Review the advisory and dependencies before removing or upgrading this package. For malicious packages, use a trusted environment to investigate exposure first.";
+    if (kind.includes("poetry.lock"))
       return {
-        msg: "This may be transitive. Identify and update the parent dependency; do not uninstall it blindly.",
-        command: "# Review the project dependency files and parent requirements first.",
+        msg,
+        command: `${cd}poetry show --why ${name}\n# After review, if appropriate:\npoetry remove ${name}`,
       };
+    if (kind.includes("uv.lock"))
+      return {
+        msg,
+        command: `${cd}uv tree --invert --package ${name}\n# After review, if appropriate:\nuv remove ${name}`,
+      };
+    if (kind.includes("Pipfile.lock"))
+      return {
+        msg,
+        command: `${cd}pipenv graph --reverse | grep -i -A3 ${name}\n# After review, if appropriate:\npipenv uninstall ${name}`,
+      };
+    if (kind === "Python pipx")
+      return {
+        msg,
+        command: `pipx list\n# This package lives in a pipx tool environment. Reinstall or uninstall the tool:\npipx uninstall <tool-name>`,
+      };
+    const isVenv = kind === "Python venv" || kind === "Python conda" || /venv$/.test(p.env);
+    const exe = isVenv
+      ? p.env + (navigator.platform.startsWith("Win") ? "\\Scripts\\python.exe" : "/bin/python")
+      : "python3";
     return {
-      msg: "Review the advisory and dependencies before removing or upgrading this package. For malicious packages, use a trusted environment to investigate exposure first.",
-      command: exe
-        ? `${quote(exe)} -m pip show ${quote(p.name)}\n# After review, if appropriate:\n${quote(exe)} -m pip uninstall ${quote(p.name)}`
-        : `# Confirm the interpreter inside ${p.env} before acting.\npython -m pip show ${quote(p.name)}`,
+      msg,
+      command: `${quote(exe)} -m pip show ${name}\n# After review, if appropriate:\n${quote(exe)} -m pip uninstall ${name}`,
     };
   }
-  if (p.ecosystem === "npm")
+  if (p.ecosystem === "npm") {
+    const msg = transitive
+      ? "A transitive package should be resolved by updating its parent dependency."
+      : "Check the lockfile and dependency tree before removing a direct package.";
+    if (kind === "npm global")
+      return {
+        msg,
+        command: `npm ls -g ${name}\n# If this is a global tool you installed, after review:\nnpm uninstall -g ${name}`,
+      };
+    if (kind.includes("pnpm-lock.yaml"))
+      return {
+        msg,
+        command: `${cd}pnpm why ${name}\n# If this is direct and removal is appropriate:\npnpm remove ${name}`,
+      };
+    if (kind.includes("yarn.lock"))
+      return {
+        msg,
+        command: `${cd}yarn why ${name}\n# If this is direct and removal is appropriate:\nyarn remove ${name}`,
+      };
     return {
-      msg:
-        p.direct === "transitive"
-          ? "A transitive package should be resolved by updating its parent dependency."
-          : "Check the lockfile and dependency tree before removing a direct package.",
-      command: `cd ${quote(p.env)}\nnpm explain ${quote(p.name)}\n# If this is direct and removal is appropriate:\nnpm uninstall ${quote(p.name)}`,
+      msg,
+      command: `${cd}npm explain ${name}\n# If this is direct and removal is appropriate:\nnpm uninstall ${name}`,
     };
+  }
   return {
     msg: "Consult your package manager and source advisory.",
     command: "# No safe command available for this ecosystem.",
@@ -444,6 +487,7 @@ async function reload() {
     "All locations",
   );
   $("roots").value = (overview.config?.roots || []).join("\n");
+  $("include-global").checked = !!overview.config?.include_global;
   renderAction();
   renderInventory();
   renderHistory();
@@ -590,7 +634,7 @@ $("save-roots").onclick = async () => {
       .value.split("\n")
       .map((x) => x.trim())
       .filter(Boolean);
-    await api("roots", "POST", { roots });
+    await api("roots", "POST", { roots, include_global: $("include-global").checked });
     $("settings-dialog").close();
     notice("Directories saved. Run Scan to refresh coverage.");
     await reload();

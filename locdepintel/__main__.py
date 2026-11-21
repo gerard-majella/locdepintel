@@ -6,7 +6,7 @@ import subprocess
 import sys
 import webbrowser
 
-from . import core, server
+from . import core, parsers, server
 
 
 def notify_macos(message):
@@ -124,6 +124,8 @@ def main():
     sp.add_parser("export")
     conf = sp.add_parser("roots")
     conf.add_argument("paths", nargs="*", help="Replace discovery paths (none means list)")
+    glob_cmd = sp.add_parser("globals", help="Turn scanning of global installs on or off")
+    glob_cmd.add_argument("state", nargs="?", choices=["on", "off"], help="Omit to show")
     sched = sp.add_parser("schedule", help="Install user launchd job (macOS)")
     sched.add_argument("--hours", type=int, default=6)
     sp.add_parser("unschedule", help="Remove user launchd job")
@@ -158,6 +160,15 @@ def main():
             c["roots"] = [str(pathlib.Path(p).expanduser().resolve()) for p in args.paths]
             core.save_config(c)
         print("\n".join(core.load_config()["roots"]))
+    elif args.command == "globals":
+        c = core.load_config()
+        if args.state:
+            c["include_global"] = args.state == "on"
+            core.save_config(c)
+        print("Global installs:", "on" if c.get("include_global") else "off")
+        for path, kind in parsers.global_candidates():
+            if pathlib.Path(path).is_dir():
+                print(f"  {kind:14} {path}")
     elif args.command == "schedule":
         print("Scheduled with launchd:", install_launchd(args.hours * 3600))
     elif args.command == "unschedule":

@@ -1,0 +1,19 @@
+{
+    "_meta": {
+        "hash": {"sha256": "0000"},
+        "pipfile-spec": 6,
+        "requires": {"python_version": "3.11"},
+        "sources": [
+            {"name": "pypi", "url": "https://pypi.org/simple", "verify_ssl": true},
+            {"name": "corp", "url": "https://pypi.corp.example/simple", "verify_ssl": true}
+        ]
+    },
+    "default": {
+        "flask": {"hashes": [], "index": "pypi", "version": "==3.0.3"},
+        "internal-lib": {"hashes": [], "index": "corp", "version": "==1.0.0"},
+        "editable-thing": {"editable": true, "path": "."}
+    },
+    "develop": {
+        "pytest": {"hashes": [], "version": "==8.2.0"}
+    }
+}

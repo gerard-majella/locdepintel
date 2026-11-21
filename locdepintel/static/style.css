@@ -1043,3 +1043,11 @@ a:focus-visible {
     padding: 22px;
   }
 }
+
+.check-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+}

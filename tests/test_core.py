@@ -47,7 +47,7 @@ class Tests(unittest.TestCase):
         env, issues = core.discover([self.root])
         self.assertEqual(len(env), 2)
         self.assertFalse(issues)
-        self.assertEqual({e[1] for e in env}, {"npm", "Python"})
+        self.assertEqual({e[1] for e in env}, {"npm (package-lock.json)", "Python venv"})
 
     def test_scan_history(self):
         r = core.scan(self.c)
