@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import pathlib
 import sys
 import webbrowser
@@ -44,7 +45,7 @@ def serve(port, open_browser=True):
         srv.server_close()
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser(
         prog="locdepintel", description="Local-first dependency watchdog (read-only)"
     )
@@ -122,6 +123,21 @@ def main():
         print("Schedule removed." if scheduler.uninstall() else "No schedule was installed.")
     else:
         parser.print_help()
+
+
+def main():
+    """Entry point: quiet on Ctrl+C and when output is piped into e.g. `head`."""
+    try:
+        _main()
+        sys.stdout.flush()
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        # Python docs, "Note on SIGPIPE": point stdout at devnull so the interpreter's
+        # final flush does not raise a second time.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Run the real command line in a subprocess, the way a user does."""
 
+import json
 import os
 import re
 import subprocess
@@ -54,6 +55,33 @@ class CliTests(unittest.TestCase):
         self.assertIn("off", run_cli("globals", home=self.home).stdout)
         self.assertIn("on", run_cli("globals", "on", home=self.home).stdout)
         self.assertIn("Global installs: on", run_cli("globals", home=self.home).stdout)
+
+    def test_output_piped_into_a_closed_reader_does_not_traceback(self):
+        """`locdepintel inventory | head -1` must not end with a BrokenPipeError traceback."""
+        project = Path(self.home) / "big"
+        project.mkdir()
+        packages = {f"node_modules/pkg-{i}": {"version": "1.0.0"} for i in range(3000)}
+        (project / "package-lock.json").write_text(
+            json.dumps({"lockfileVersion": 3, "packages": {"": {}, **packages}})
+        )
+        run_cli("roots", str(project), home=self.home)
+        run_cli("scan", "--offline", home=self.home)
+        env = dict(os.environ, HOME=self.home, XDG_DATA_HOME=os.path.join(self.home, "data"))
+        env["LOCALAPPDATA"] = os.path.join(self.home, "data")
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "locdepintel", "inventory"],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        proc.stdout.readline()
+        proc.stdout.close()  # reader goes away after one line, like `| head -1`
+        err = proc.stderr.read()
+        proc.stderr.close()
+        proc.wait(timeout=30)
+        self.assertNotIn(b"Traceback", err)
+        self.assertNotIn(b"BrokenPipeError", err)
 
     def test_serve_rejects_bad_port_with_message(self):
         out = run_cli("serve", "--port", "80", "--no-browser", home=self.home)

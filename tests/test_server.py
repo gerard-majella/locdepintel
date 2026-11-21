@@ -138,6 +138,37 @@ class SettingsTests(ServerTestCase):
         self.assertEqual(resp.status, 400)
 
 
+class ErrorHandlingTests(ServerTestCase):
+    def test_internal_error_returns_json_500_without_leaking_details(self):
+        boom = RuntimeError("secret path /home/me/.ssh/id_rsa")
+        with mock.patch.object(core, "state", side_effect=boom), mock.patch("sys.stderr"):
+            resp, data = self.request("GET", "/api/state", headers=self.cookie())
+        self.assertEqual(resp.status, 500)
+        body = json.loads(data)
+        self.assertIn("Internal error", body["error"])
+        self.assertNotIn(".ssh", body["error"])
+
+    def test_server_keeps_working_after_an_error(self):
+        with (
+            mock.patch.object(core, "overview", side_effect=ValueError("x")),
+            mock.patch("sys.stderr"),
+        ):
+            self.request("GET", "/api/overview", headers=self.cookie())
+        resp, _ = self.request("GET", "/api/state", headers=self.cookie())
+        self.assertEqual(resp.status, 200)
+
+    def test_failed_post_releases_the_task_lock(self):
+        headers = dict(self.cookie(), **{"Content-Type": "application/json"})
+        with mock.patch.object(core, "scan", side_effect=OSError("disk")), mock.patch("sys.stderr"):
+            resp, _ = self.request("POST", "/api/scan", body="{}", headers=headers)
+        self.assertEqual(resp.status, 500)
+        self.assertFalse(server.LOCK.locked())
+
+    def test_unknown_method_rejected(self):
+        resp, _ = self.request("DELETE", "/api/state", headers=self.cookie())
+        self.assertEqual(resp.status, 501)
+
+
 class PortTests(ServerTestCase):
     def test_host_allow_list_follows_the_actual_port(self):
         self.assertNotEqual(self.port, 8765)

@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -145,6 +146,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---------------------------------------------------------------- responses
 
     def _headers(self, code, content_type, length, extra=()):
+        self._started = True
         self.send_response(code)
         if content_type:
             self.send_header("Content-Type", content_type + "; charset=utf-8")
@@ -197,9 +199,33 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none")
 
-    # -------------------------------------------------------------------- GET
+    # ---------------------------------------------------------- error handling
+
+    def _safely(self, handler):
+        """Never drop the connection on a bug: log it, answer with a generic JSON 500."""
+        try:
+            handler()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the browser went away; nothing to answer
+        except Exception:
+            error_id = secrets.token_hex(4)
+            sys.stderr.write(f"[locdepintel] internal error {error_id} on {self.command} ")
+            sys.stderr.write(f"{urlparse(self.path).path}\n{traceback.format_exc()}")
+            sys.stderr.flush()
+            if not self._started:
+                self.send(500, {"error": f"Internal error ({error_id}); see the terminal"})
 
     def do_GET(self):
+        self._started = False
+        self._safely(self._get)
+
+    def do_POST(self):
+        self._started = False
+        self._safely(self._post)
+
+    # -------------------------------------------------------------------- GET
+
+    def _get(self):
         if not self.host_ok():
             return self.send(403, {"error": "Invalid host"})
         url = urlparse(self.path)
@@ -242,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------- POST
 
-    def do_POST(self):
+    def _post(self):
         if not self.host_ok():
             return self.send(403, {"error": "Invalid host"})
         if not self.authenticated():
