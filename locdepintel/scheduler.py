@@ -210,7 +210,7 @@ def windows_schedule_args(hours):
 def _install_windows(hours):
     schedule = windows_schedule_args(hours)
     wrapper = _windows_wrapper()
-    wrapper.write_text(windows_wrapper_text())
+    wrapper.write_text(windows_wrapper_text(), newline="")  # already CRLF; do not translate
     cmd = ["schtasks", "/Create", "/TN", WINDOWS_TASK, "/TR", f'"{wrapper}"', *schedule, "/F"]
     result = _run(cmd)
     if result.returncode:

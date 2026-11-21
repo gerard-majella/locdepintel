@@ -9,6 +9,11 @@ from unittest import mock
 
 from locdepintel import advisories, settings
 
+# LocDepIntel stores real paths (resolved). The temp folder is often a link or a short name:
+# /var/folders -> /private/var/folders on macOS, C:\Users\RUNNER~1 -> C:\Users\runneradmin
+# on GitHub's Windows runners. Use the real path so expected paths in tests match.
+tempfile.tempdir = os.path.realpath(tempfile.gettempdir())
+
 
 def _network_blocked(*args, **kwargs):
     raise AssertionError(f"Test tried to use the real network: {args[:1]}")

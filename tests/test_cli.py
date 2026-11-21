@@ -1,5 +1,6 @@
 """Run the real command line in a subprocess, the way a user does."""
 
+import errno
 import json
 import os
 import re
@@ -46,6 +47,19 @@ class CliTests(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("needs Python 3.11 or newer, but this is Python 3.9.6", out.stderr)
         self.assertNotIn("Traceback", out.stderr)
+
+    def test_closed_pipe_detection_per_platform(self):
+        from unittest import mock
+
+        from locdepintel import __main__ as cli
+
+        einval = OSError(errno.EINVAL, "Invalid argument")
+        self.assertTrue(cli._closed_pipe(BrokenPipeError()))
+        with mock.patch.object(sys, "platform", "win32"):
+            self.assertTrue(cli._closed_pipe(einval))
+        with mock.patch.object(sys, "platform", "linux"):
+            self.assertFalse(cli._closed_pipe(einval))  # a real error elsewhere: re-raise
+        self.assertFalse(cli._closed_pipe(OSError(errno.ENOSPC, "No space left")))
 
     def test_help_lists_commands(self):
         out = run_cli("--help", home=self.home)

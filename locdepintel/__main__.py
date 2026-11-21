@@ -1,4 +1,5 @@
 import argparse
+import errno
 import json
 import os
 import pathlib
@@ -142,12 +143,21 @@ def main():
         sys.stdout.flush()
     except KeyboardInterrupt:
         sys.exit(130)
-    except BrokenPipeError:
+    except OSError as ex:
+        # A reader that went away (`| head`): EPIPE on POSIX, EINVAL on Windows.
+        if not _closed_pipe(ex):
+            raise
         # Python docs, "Note on SIGPIPE": point stdout at devnull so the interpreter's
         # final flush does not raise a second time.
         devnull = os.open(os.devnull, os.O_WRONLY)
         os.dup2(devnull, sys.stdout.fileno())
         sys.exit(1)
+
+
+def _closed_pipe(ex):
+    if isinstance(ex, BrokenPipeError):
+        return True
+    return sys.platform == "win32" and ex.errno == errno.EINVAL
 
 
 if __name__ == "__main__":
