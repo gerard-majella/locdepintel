@@ -34,9 +34,14 @@ const PER_PAGE = 35;
 async function api(endpoint, method = "GET", obj) {
   const r = await fetch("/api/" + endpoint, {
     method,
+    credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: obj ? JSON.stringify(obj) : undefined,
   });
+  if (r.status === 401) {
+    // Session cookie missing or from a previous server run: the page cannot recover by itself.
+    throw Error("Session expired. Open the new link printed in the terminal by locdepintel serve.");
+  }
   const data = await r.json();
   if (!r.ok) throw Error(data.error || "Request failed");
   return data;

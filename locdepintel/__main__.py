@@ -2,283 +2,11 @@ import argparse
 import json
 import os
 import pathlib
-import shutil
 import subprocess
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+import webbrowser
 
-from . import core
-
-LOCK = threading.Lock()
-JOB_LOCK = threading.Lock()
-JOB = {
-    "state": "idle",
-    "stage": "Not started",
-    "started": None,
-    "ended": None,
-    "result": None,
-    "error": None,
-}
-
-
-def background_scan():
-    """Run one discover + exact-version advisory cycle, reporting real stages."""
-
-    def worker():
-        try:
-            with JOB_LOCK:
-                JOB.update(
-                    state="running", stage="Discovering environments", started=core.timestamp()
-                )
-            discovered = core.scan()
-            with JOB_LOCK:
-                JOB["stage"] = "Checking exact versions against OSV"
-            checked = core.assess()
-            with JOB_LOCK:
-                JOB.update(
-                    state=(
-                        "complete"
-                        if checked.get("state") in ("ok", "no-packages")
-                        and not discovered.get("warnings")
-                        else "partial"
-                    ),
-                    stage="Scan finished",
-                    ended=core.timestamp(),
-                    result={"discovery": discovered, "security": checked},
-                )
-        except Exception as exc:
-            with JOB_LOCK:
-                JOB.update(
-                    state="error", stage="Scan failed", ended=core.timestamp(), error=str(exc)[:500]
-                )
-        finally:
-            LOCK.release()
-
-    if not LOCK.acquire(blocking=False):
-        return False
-    with JOB_LOCK:
-        JOB.update(
-            state="starting",
-            stage="Starting",
-            started=core.timestamp(),
-            ended=None,
-            result=None,
-            error=None,
-        )
-    threading.Thread(target=worker, daemon=True, name="locdepintel-fullscan").start()
-    return True
-
-
-STATIC = pathlib.Path(__file__).parent / "static"
-
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
-        pass
-
-    def send(self, code, body, typ="application/json"):
-        b = json.dumps(body).encode() if typ == "application/json" else body
-        self.send_response(code)
-        self.send_header("Content-Type", typ + "; charset=utf-8")
-        self.send_header("Content-Length", str(len(b)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-        )
-        self.end_headers()
-        self.wfile.write(b)
-
-    def do_GET(self):
-        if self.headers.get("Host") not in ("127.0.0.1:8765", "localhost:8765"):
-            return self.send(403, {"error": "Invalid host"})
-        p = urlparse(self.path).path
-        if p == "/api/state":
-            return self.send(200, core.state())
-        if p == "/api/overview":
-            return self.send(200, core.overview())
-        if p == "/api/onboarding":
-            return self.send(200, core.setup_status())
-        if p == "/api/scan-status":
-            with JOB_LOCK:
-                return self.send(200, dict(JOB))
-        if p == "/api/inventory":
-            return self.send(200, core.inventory())
-        if p == "/api/grouped-findings":
-            return self.send(200, core.grouped_findings())
-        if p == "/api/pulse":
-            return self.send(200, core.pulse())
-        if p == "/api/export":
-            data = json.dumps(core.export(), indent=2).encode()
-            return self.send(200, data, "application/json")
-        if p == "/":
-            p = "/index.html"
-        if p not in ["/index.html", "/app.js", "/style.css"]:
-            return self.send(404, {"error": "Not found"})
-        f = STATIC / p[1:]
-        typ = (
-            "text/html"
-            if p.endswith(".html")
-            else "text/javascript" if p.endswith(".js") else "text/css"
-        )
-        return self.send(200, f.read_bytes(), typ)
-
-    def do_POST(self):
-        if self.headers.get("Host") not in ("127.0.0.1:8765", "localhost:8765"):
-            return self.send(403, {"error": "Invalid host"})
-        # API bound to loopback; require same-site Origin when browser supplies it. No CORS support.
-        origin = self.headers.get("Origin", "")
-        if origin and origin not in ("http://127.0.0.1:8765", "http://localhost:8765"):
-            return self.send(403, {"error": "Invalid origin"})
-        if self.headers.get("Content-Length", "0") not in ("0", ""):
-            try:
-                n = int(self.headers.get("Content-Length", "0"))
-                if n > 20000:
-                    return self.send(413, {"error": "Payload too large"})
-                obj = json.loads(self.rfile.read(n))
-            except Exception:
-                return self.send(400, {"error": "Invalid JSON"})
-        else:
-            obj = {}
-        if self.path == "/api/onboarding":
-            roots = obj.get("roots", None)
-            skip = obj.get("skip", False)
-            if not isinstance(skip, bool) or (
-                roots is not None
-                and (
-                    not isinstance(roots, list)
-                    or len(roots) > 15
-                    or any(not isinstance(x, str) or not x or len(x) > 1000 for x in roots)
-                )
-            ):
-                return self.send(400, {"error": "Invalid onboarding choices"})
-            if not skip and not roots:
-                return self.send(400, {"error": "Select at least one scan location"})
-            return self.send(200, core.finish_onboarding(roots=roots, skip=skip))
-        if self.path == "/api/scan-full":
-            if not background_scan():
-                return self.send(409, {"error": "Another scan is already running"})
-            return self.send(202, {"state": "starting"})
-        if self.path == "/api/pulse-sync":
-            if not LOCK.acquire(blocking=False):
-                return self.send(409, {"error": "Another task is running"})
-            try:
-                return self.send(200, core.sync_pulse())
-            finally:
-                LOCK.release()
-        if self.path == "/api/package-intel":
-            ecosystem = obj.get("ecosystem")
-            name = obj.get("name")
-            env = obj.get("env")
-            version = obj.get("version")
-            if not all(isinstance(x, str) for x in (ecosystem, name, env, version)) or any(
-                len(x) > 2048 for x in (ecosystem, name, env, version)
-            ):
-                return self.send(400, {"error": "Invalid package selection"})
-            with core.db() as con:
-                known = con.execute(
-                    "SELECT 1 FROM inventory WHERE active=1 AND ecosystem=? AND name=? AND env=? AND version=?",
-                    (ecosystem, name, env, version),
-                ).fetchone()
-            if not known:
-                return self.send(404, {"error": "Package not in discovered inventory"})
-            try:
-                return self.send(200, core.package_intelligence(ecosystem, name))
-            except Exception as ex:
-                return self.send(
-                    502, {"error": "Live registry metadata unavailable: " + str(ex)[:180]}
-                )
-        if self.path == "/api/terminal":
-            requested = obj.get("path")
-            if sys.platform != "darwin":
-                return self.send(
-                    501,
-                    {
-                        "error": "Opening Terminal is available on macOS only. Copy the path on other systems."
-                    },
-                )
-            if not isinstance(requested, str) or len(requested) > 2048:
-                return self.send(400, {"error": "Invalid location"})
-            with core.db() as con:
-                known = con.execute("SELECT 1 FROM envs WHERE path=?", (requested,)).fetchone()
-            if not known:
-                return self.send(404, {"error": "Environment was not discovered"})
-            path = pathlib.Path(requested)
-            if not path.is_dir():
-                return self.send(404, {"error": "Environment directory unavailable"})
-            # AppleScript is static and takes only a validated path argument. Only changes the shell directory.
-            script = 'on run argv\n tell application "Terminal" to do script "cd " & quoted form of (item 1 of argv)\n activate application "Terminal"\nend run'
-            try:
-                subprocess.Popen(
-                    ["/usr/bin/osascript", "-e", script, str(path)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                return self.send(200, {"ok": True})
-            except OSError as ex:
-                return self.send(500, {"error": "Unable to open Terminal: " + str(ex)})
-        if self.path == "/api/reveal":
-            requested = obj.get("path")
-            if not isinstance(requested, str) or len(requested) > 2048:
-                return self.send(400, {"error": "Invalid location"})
-            # Only known inventory/environment paths may be revealed. No arbitrary command execution.
-            with core.db() as con:
-                known = con.execute("SELECT 1 FROM envs WHERE path=?", (requested,)).fetchone()
-            if not known:
-                return self.send(404, {"error": "Location was not discovered by LocDepIntel"})
-            target = pathlib.Path(requested)
-            if not target.exists():
-                return self.send(404, {"error": "Location no longer exists"})
-            try:
-                if sys.platform == "darwin":
-                    cmd = ["/usr/bin/open", "-R", str(target)]
-                elif sys.platform == "win32":
-                    cmd = ["explorer.exe", str(target)]
-                else:
-                    explorer = shutil.which("xdg-open")
-                    if not explorer:
-                        return self.send(
-                            501,
-                            {
-                                "error": "File manager integration unavailable; copy the location instead"
-                            },
-                        )
-                    cmd = [explorer, str(target if target.is_dir() else target.parent)]
-                subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return self.send(200, {"ok": True})
-            except OSError as ex:
-                return self.send(500, {"error": "Could not open location: " + str(ex)})
-        if self.path == "/api/scan":
-            if not LOCK.acquire(blocking=False):
-                return self.send(409, {"error": "Another task is running"})
-            try:
-                return self.send(200, core.scan())
-            finally:
-                LOCK.release()
-        if self.path == "/api/check":
-            if not LOCK.acquire(blocking=False):
-                return self.send(409, {"error": "Another task is running"})
-            try:
-                return self.send(200, core.assess())
-            finally:
-                LOCK.release()
-        if self.path == "/api/roots":
-            roots = obj.get("roots")
-            if (
-                not isinstance(roots, list)
-                or len(roots) > 30
-                or any(not isinstance(x, str) or not x or len(x) > 1000 for x in roots)
-            ):
-                return self.send(400, {"error": "Invalid roots"})
-            # user chooses paths; no arbitrary scripts or shell commands are accepted
-            c = core.load_config()
-            c["roots"] = [str(pathlib.Path(x).expanduser().resolve()) for x in roots]
-            core.save_config(c)
-            return self.send(200, {"ok": True, "roots": c["roots"]})
-        return self.send(404, {"error": "Not found"})
+from . import core, server
 
 
 def notify_macos(message):
@@ -354,13 +82,38 @@ def install_launchd(interval=21600):
     return str(path)
 
 
+def serve(port, open_browser=True):
+    try:
+        srv = server.make_server(port)
+    except ValueError as ex:
+        sys.exit(f"locdepintel: {ex}")
+    except OSError as ex:
+        sys.exit(f"locdepintel: cannot listen on 127.0.0.1:{port} ({ex.strerror}). Try --port.")
+    print("LocDepIntel is running. Open this private link (it changes every start):")
+    print(f"  {srv.launch_url}")
+    print("Anyone without this link gets 401. Press Ctrl+C to stop.")
+    if open_browser:
+        webbrowser.open(srv.launch_url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="locdepintel", description="Local-first dependency watchdog (read-only)"
     )
     sp = parser.add_subparsers(dest="command")
-    serve = sp.add_parser("serve", help="Start local web UI")
-    serve.add_argument("--port", type=int, default=8765)
+    serve_cmd = sp.add_parser("serve", help="Start local web UI")
+    serve_cmd.add_argument(
+        "--port", type=int, default=8765, help="Port on 127.0.0.1 (default 8765)"
+    )
+    serve_cmd.add_argument(
+        "--no-browser", action="store_true", help="Print the session link but do not open it"
+    )
     s = sp.add_parser("scan", help="Discover packages in configured roots")
     s.add_argument("--offline", action="store_true", help="Do not query OSV")
     sp.add_parser("run-once", help="Scan + advisory and Threat Pulse refresh for scheduler")
@@ -376,16 +129,7 @@ def main():
     sp.add_parser("unschedule", help="Remove user launchd job")
     args = parser.parse_args()
     if args.command == "serve":
-        if args.port != 8765:
-            parser.error("UI is currently restricted to port 8765 for origin protection")
-        srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-        print(f"LocDepIntel local UI: http://127.0.0.1:{args.port} (Ctrl+C to stop)")
-        try:
-            srv.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            srv.server_close()
+        return serve(args.port, open_browser=not args.no_browser)
     elif args.command in ("scan", "run-once"):
         print(
             json.dumps(
