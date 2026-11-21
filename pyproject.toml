@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "locdepintel"
+dynamic = ["version"]
+description = "Local dependency intelligence: inventory every Python and npm environment on your machine and watch it for malware and vulnerability advisories."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "gerard-majella"}]
+keywords = ["security", "supply-chain", "sca", "osv", "malware", "dependencies", "blue-team"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Security",
+  "Environment :: Web Environment",
+  "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/gerard-majella/locdepintel"
+Issues = "https://github.com/gerard-majella/locdepintel/issues"
+
+[project.scripts]
+locdepintel = "locdepintel.__main__:main"
+
+[tool.setuptools]
+packages = ["locdepintel"]
+
+[tool.setuptools.dynamic]
+version = {attr = "locdepintel.__version__"}
+
+[tool.setuptools.package-data]
+locdepintel = ["static/*"]

@@ -1,0 +1,66 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>LocDepIntel | Local dependency intelligence</title><link rel="stylesheet" href="/style.css"></head><body>
+<div class="app">
+<aside class="sidebar" aria-label="Main navigation">
+ <div class="brand"><div class="brand-icon">L<span>.</span></div><div><strong>LocDepIntel</strong><small>DEPENDENCY INTEL</small></div></div>
+ <nav class="nav">
+  <button class="navbtn active" data-view="overview"><span class="navico">▦</span> Overview</button>
+  <button class="navbtn" data-view="action"><span class="navico">◇</span> Action Center <span class="navcount" id="nav-findings"></span></button>
+  <button class="navbtn" data-view="inventory"><span class="navico">▤</span> Inventory</button>
+  <button class="navbtn" data-view="pulse"><span class="navico">↗</span> Threat Pulse</button>
+  <button class="navbtn" data-view="history"><span class="navico">◷</span> History</button>
+ </nav>
+ <div class="sidebar-foot"><span class="connected-dot"></span> Local monitoring <div class="mini muted">Read-only · v0.8</div></div>
+</aside>
+<div class="mainframe">
+ <header class="topbar"><div id="breadcrumb">Workspace <span>/</span> Overview</div><div class="header-actions"><button class="textbutton" id="settings-button" aria-label="Monitoring settings">Settings</button><button class="textbutton" id="theme-button" aria-label="Toggle light or dark theme">Dark mode</button><a class="textbutton" href="/api/export" target="_blank" rel="noopener">Export ↗</a></div></header>
+ <main class="content" id="main-content">
+  <div class="notification" id="notice" hidden role="status"><span id="notice-text"></span><button id="notice-close" class="notice-close" aria-label="Dismiss notification">×</button></div>
+  <section id="view-overview" class="view">
+   <div class="pagehead"><div><p class="overline">YOUR MACHINE</p><h1>Security overview</h1><p>Know what needs attention across your monitored projects.</p></div><button class="primary-button" id="scan" type="button">↻ &nbsp; Scan machine</button></div>
+   <div class="scanline"><div><span class="dot" id="health-dot"></span><span id="health-label">Loading last assessment…</span><span class="muted" id="last-scan"></span></div><button class="linkbutton" id="scan-details">Scan details →</button></div>
+   <div id="scan-progress" class="scanprogress" hidden><strong id="scan-stage">Starting scan…</strong><div class="indeterminate"></div><span class="mini muted">Discovery and live advisory checks may take several minutes. Results are only updated when the check finishes.</span></div>
+   <div class="healthline" aria-label="Health summary">
+    <button class="healthitem" data-stat="affected"><span>Affected packages</span><strong id="metric-affected">-</strong><small>Distinct package versions</small></button>
+    <button class="healthitem" data-stat="environments"><span>Environments</span><strong id="metric-envs">-</strong><small>Discovered locations</small></button>
+    <button class="healthitem" data-stat="new"><span>New findings</span><strong id="metric-new">-</strong><small>Since previous full check</small></button>
+   </div>
+   <div class="section-title"><div><h2>Action queue</h2><p>Highest-priority affected packages, consolidated across installations.</p></div><button class="linkbutton" data-goto="action">View all findings →</button></div>
+   <div class="table-shell"><table><thead><tr><th>PACKAGE</th><th>TYPE</th><th>ADVISORIES</th><th>LOCATIONS</th><th></th></tr></thead><tbody id="queue-body"><tr><td colspan="5" class="empty">Loading your findings…</td></tr></tbody></table></div>
+   <div class="section-title envhead"><div><h2>Environments</h2><p>Jump straight into a project or virtual environment.</p></div><button class="linkbutton" data-goto="inventory">All packages →</button></div>
+   <div class="env-list" id="overview-envs"></div>
+   <p class="footnote" id="scope-note">Coverage is limited to discovered environments.</p>
+  </section>
+  <section id="view-action" class="view" hidden>
+   <div class="pagehead"><div><p class="overline">REMEDIATION</p><h1>Action Center</h1><p>One finding per package and version. Review evidence, then act where it is installed.</p></div></div>
+   <div class="toolbar"><input id="action-search" type="search" placeholder="Search affected dependencies" aria-label="Search findings"><select id="action-kind" aria-label="Finding type"><option value="">All findings</option><option value="malware">Malware reports</option><option value="vulnerability">Vulnerabilities</option></select><label class="new-only"><input type="checkbox" id="action-new"> New since last check</label><span class="resultcount" id="action-count"></span></div>
+   <div class="table-shell"><table><thead><tr><th>PACKAGE</th><th>TYPE</th><th>ADVISORIES</th><th>LOCATIONS</th><th></th></tr></thead><tbody id="action-body"></tbody></table></div>
+   <p class="footnote">A malicious package may have executed during installation. Removing it may not reverse exposure; review the source advisory and potential credential impact.</p>
+  </section>
+  <section id="view-inventory" class="view" hidden>
+   <div class="pagehead"><div><p class="overline">DISCOVERED SOFTWARE</p><h1>Inventory</h1><p>Browse exact versions and environments. No changes are made to installed software.</p></div></div>
+   <div class="toolbar"><input type="search" id="inv-search" placeholder="Find a package or path…" aria-label="Search inventory"><select id="inv-eco" aria-label="Ecosystem"><option value="">All ecosystems</option></select><select id="inv-folder" aria-label="Parent folder"><option value="">All locations</option></select><select id="inv-env" aria-label="Environment"><option value="">All environments</option></select><select id="inv-risk" aria-label="Risk filter"><option value="">All statuses</option><option value="malware">Malware</option><option value="vulnerability">Vulnerable</option><option value="none">No active finding</option></select><button class="quiet-button" id="inv-clear">Clear</button></div>
+   <div class="toolbar-secondary"><span class="resultcount" id="inventory-count"></span><div class="group-toggle" role="group" aria-label="Inventory display"><button id="inv-grouped" class="quiet-button" aria-pressed="true">Grouped</button><button id="inv-individual" class="quiet-button" aria-pressed="false">Individual</button></div><select id="inv-sort" aria-label="Sort packages"><option value="name">Name A–Z</option><option value="risk">Risk first</option><option value="recent">Recently observed</option></select></div>
+   <div class="table-shell"><table><thead><tr><th>PACKAGE</th><th>VERSION</th><th>TYPE</th><th>STATUS</th><th id="inv-location-head">INSTALLATIONS</th><th></th></tr></thead><tbody id="inventory-body"></tbody></table></div>
+   <div class="pagination"><button class="quiet-button" id="inv-prev">← Previous</button><span id="page-count"></span><button class="quiet-button" id="inv-next">Next →</button></div>
+  </section>
+  <section id="view-pulse" class="view" hidden>
+   <div class="pagehead"><div><p class="overline">PUBLIC ADVISORIES</p><h1>Threat Pulse</h1><p>Recently published software supply-chain disclosures, with local inventory context.</p></div><button class="secondary-button" id="pulse-refresh">Refresh sources</button></div>
+   <div class="scanline" id="pulse-status">No source sync recorded.</div>
+   <div class="toolbar"><input type="search" id="pulse-search" placeholder="Search advisories and packages"><select id="pulse-kind"><option value="">All types</option><option value="malware">Malware</option><option value="vulnerability">Vulnerabilities</option></select><select id="pulse-eco"><option value="">All ecosystems</option><option value="npm">npm</option><option value="PyPI">PyPI</option></select><select id="pulse-local"><option value="">All local states</option><option value="affected">Matched locally</option><option value="package-present">Package installed</option><option value="not-detected">Not detected</option></select></div><div class="resultcount" id="pulse-count"></div><div class="pulse-list" id="pulse-list"></div>
+  </section>
+  <section id="view-history" class="view" hidden><div class="pagehead"><div><p class="overline">AUDIT TRAIL</p><h1>History</h1><p>What changed in your discovered environments and security intelligence.</p></div></div><div id="history-body" class="history-list"></div></section>
+ </main>
+</div></div>
+<div id="overlay" class="overlay" hidden></div>
+<aside id="drawer" class="drawer" hidden role="dialog" aria-modal="true" aria-labelledby="drawer-heading"><div class="drawerhead"><span class="overline" id="drawer-eyebrow">PACKAGE REVIEW</span><button id="drawer-close" class="icon-close" aria-label="Close panel">×</button></div><div id="drawer-body"></div></aside>
+<dialog id="settings-dialog" class="settings-dialog"><div class="dialog-top"><h2>Monitoring settings</h2><button class="icon-close" id="settings-close" aria-label="Close settings">×</button></div><p class="muted">Select directories you own. One per line. Scans read package metadata and lockfiles; they do not execute project code.</p><label for="roots">Discovery directories</label><textarea id="roots" rows="5" spellcheck="false"></textarea><div class="dialog-actions"><button class="secondary-button" id="save-roots">Save locations</button><button class="quiet-button" id="settings-cancel">Cancel</button></div><hr><p class="mini muted">On macOS, enable periodic scans from Terminal with <code>python3 -m locdepintel schedule --hours 6</code>. This remains optional and runs under your user account.</p></dialog>
+<dialog id="welcome-dialog" class="welcome-dialog" aria-labelledby="welcome-title">
+ <div class="welcome-mark">L.</div><p class="overline">FIRST RUN SETUP</p>
+ <h2 id="welcome-title">Find out what's installed.</h2>
+ <p class="muted">Discover developer environments and check published advisories. Your inventory stays local. Only package names and versions are sent to the advisory provider during online checks.</p>
+ <div class="welcome-privacy">Read-only scan · No installs or removals · No administrator access</div>
+ <h3>Where should we look?</h3><div id="welcome-roots" class="welcome-roots"></div>
+ <div class="dialog-actions welcome-actions"><button class="quiet-button" id="welcome-skip">Skip for now</button><button class="primary-button" id="welcome-start">Start first scan →</button></div>
+ <p class="mini muted">Review and change locations anytime under Settings. Scans have directory and depth limits; incomplete coverage is reported.</p>
+</dialog>
+<script src="/app.js"></script></body></html>

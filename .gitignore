@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+.DS_Store
+# Local scan data must never be committed: it contains your file paths and package inventory
+*.sqlite3
+*.sqlite3-*
+locdepintel-export*.json
