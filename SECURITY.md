@@ -13,8 +13,20 @@ In scope: the local web UI and API (`127.0.0.1:8765`), the scanner, the schedule
 
 ## Threat model (summary)
 
-- The UI binds to loopback only and rejects requests with an unexpected `Host` or `Origin` header (DNS rebinding and cross-site request protection).
-- Scanning is read-only. LocDepIntel parses `METADATA` files and `package-lock.json`; it never imports, executes or installs scanned code.
-- Advisory text from OSV and GitHub is treated as untrusted and HTML-escaped before rendering; a strict Content-Security-Policy blocks inline script.
-- Package names and versions (not file paths) are sent to `api.osv.dev` and `api.deps.dev` for matching. Workspace-local npm packages are excluded so internal names are not disclosed.
-- Known limitation: any process running as **another local user** can reach the loopback API. See the roadmap item on per-session API tokens.
+Assets: the list of packages and file paths on your machine, and the integrity of the scan settings.
+
+- **Remote websites** (malicious pages open in your browser): blocked by the loopback bind, `Host`
+  allow-list (DNS rebinding), per-run token, `SameSite=Strict` cookie, and `Origin` /
+  `Sec-Fetch-Site` / JSON content-type checks on every state change.
+- **Other local users and processes** without the token: every request returns 401.
+- **Hostile project folders**: scanning is read-only. LocDepIntel parses metadata and lockfiles
+  and never imports, executes or installs scanned code, including the environment's own
+  interpreter. Symlinks are not followed during discovery.
+- **Hostile advisory or package text**: HTML-escaped before rendering; a strict
+  Content-Security-Policy blocks inline script as a second layer.
+- **Privacy**: only public-registry package names and versions are sent to `api.osv.dev`,
+  `api.deps.dev` and `api.github.com`. Workspace members, local paths, git dependencies, private
+  indexes and `npm link` targets are not sent. File paths never leave the machine.
+
+Out of scope: malware already running as your own user account (it can read your files directly),
+and the correctness of third-party advisory databases.
